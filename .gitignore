@@ -210,3 +210,9 @@ cython_debug/
 
 # macOS system files
 .DS_Store
+
+# Some stuff
+docs/*.md
+BOT_REFERENCE.md
+Py4GW.dll
+*.sqlite3*
