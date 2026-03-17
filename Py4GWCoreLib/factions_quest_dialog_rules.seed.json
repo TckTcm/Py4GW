@@ -1,0 +1,385 @@
+{
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-02-09T19:43:23.658060Z",
+  "source": "guildwars_wiki",
+  "campaign": "Factions",
+  "language": "en",
+  "quests": [
+    {
+      "quest_name": "An Audience with Master Togo (assassin)",
+      "quest_wiki_url": "https://wiki.guildwars.com/wiki/An_Audience_with_Master_Togo_(assassin)",
+      "campaign": "Factions",
+      "map_name": "Kinya Province",
+      "map_id": null,
+      "npc_entries": [
+        {
+          "npc_name": "Panaku",
+          "npc_wiki_url": "https://wiki.guildwars.com/wiki/Panaku",
+          "model_id": null,
+          "npc_uid_hint": {
+            "map_id": null,
+            "model_id": null,
+            "name": "Panaku"
+          },
+          "dialog_steps": [
+            {
+              "step_index": 1,
+              "body_text_raw": "You show promise, <character name>. Unfortunately, I have some...other business I must attend to at the moment. You should return to the monastery and meet with Master Togo in Linnok Courtyard just off of the main monastery proper.\nUse your map to travel there quickly.",
+              "body_text_norm": "you show promise, . unfortunately, i have some...other business i must attend to at the moment. you should return to the monastery and meet with master togo in linnok courtyard just off of the main monastery proper. use your map to travel there quickly.",
+              "body_dialog_id": null,
+              "choices": [
+                {
+                  "choice_index": 1,
+                  "choice_text_raw": "I'm on my way.",
+                  "choice_text_norm": "i'm on my way.",
+                  "choice_dialog_id": null,
+                  "intent": "accept",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 2,
+                  "choice_text_raw": "I need to rest, first.",
+                  "choice_text_norm": "i need to rest, first.",
+                  "choice_dialog_id": null,
+                  "intent": "decline",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 3,
+                  "choice_text_raw": "You are ready to become an Assassin, <character name>. Use your map to return to the monastery. Master Togo awaits you in Linnok Courtyard.",
+                  "choice_text_norm": "you are ready to become an assassin, . use your map to return to the monastery. master togo awaits you in linnok courtyard.",
+                  "choice_dialog_id": null,
+                  "intent": "progress",
+                  "send_priority": 100
+                }
+              ],
+              "expected_next_body_text_norm": null,
+              "notes": null
+            }
+          ],
+          "sources": [
+            {
+              "url": "https://wiki.guildwars.com/wiki/An_Audience_with_Master_Togo_(assassin)",
+              "evidence_quote": "You show promise, <character name>... Use your map to travel there quickly."
+            },
+            {
+              "url": "https://wiki.guildwars.com/wiki/An_Audience_with_Master_Togo_(assassin)",
+              "evidence_quote": "Accept: \"I'm on my way.\" ... Decline: \"I need to rest, first.\" ... Ask: \"You are ready to become an Assassin...\""
+            }
+          ]
+        },
+        {
+          "npc_name": "Master Togo",
+          "npc_wiki_url": "https://wiki.guildwars.com/wiki/Master_Togo",
+          "model_id": null,
+          "npc_uid_hint": {
+            "map_id": null,
+            "model_id": null,
+            "name": "Master Togo"
+          },
+          "dialog_steps": [
+            {
+              "step_index": 1,
+              "body_text_raw": "Headmaster Lee has told me great thing about you, <character name>. You have begun to learn the way of the Assassin, but to reach your full potential you must choose a second path.\nSpeak with the other headmasters and learn what they have to teach you. When you are ready to make a final choice, come and speak to me again.",
+              "body_text_norm": "headmaster lee has told me great thing about you, . you have begun to learn the way of the assassin, but to reach your full potential you must choose a second path. speak with the other headmasters and learn what they have to teach you. when you are ready to make a final choice, come and speak to me again.",
+              "body_dialog_id": null,
+              "choices": [],
+              "expected_next_body_text_norm": null,
+              "notes": null
+            }
+          ],
+          "sources": [
+            {
+              "url": "https://wiki.guildwars.com/wiki/An_Audience_with_Master_Togo_(assassin)",
+              "evidence_quote": "Headmaster Lee has told me great thing about you, <character name>... When you are ready to make a final choice, come and speak to me again."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "quest_name": "Dual Strike",
+      "quest_wiki_url": "https://wiki.guildwars.com/wiki/Dual_Strike",
+      "campaign": "Factions",
+      "map_name": "Kinya Province",
+      "map_id": null,
+      "npc_entries": [
+        {
+          "npc_name": "Panaku",
+          "npc_wiki_url": "https://wiki.guildwars.com/wiki/Panaku",
+          "model_id": null,
+          "npc_uid_hint": {
+            "map_id": null,
+            "model_id": null,
+            "name": "Panaku"
+          },
+          "dialog_steps": [
+            {
+              "step_index": 1,
+              "body_text_raw": "I imagine Jinzo spoke to you of duty and of balance. That is all well and good for him, but as for me, I do this for the thrill, the pleasure, and the gold. Look into your victim's eyes as your blades steal away his life, and you can take his power, his essence, into your own. I remember everyone I have ever killed. They have become part of me. They are my power. I will teach you to be a hunter: you the spider, the mark your prey.\nNow, listen carefully: I have a paying job from some...associates of mine. If you make the kill, I will split the profits with you. Headmaster Lee would not approve, but never mind that. Speak with me when you are ready to accept the task and learn new skills; we will head to the village to finish this job afterward.",
+              "body_text_norm": "i imagine jinzo spoke to you of duty and of balance. that is all well and good for him, but as for me, i do this for the thrill, the pleasure, and the gold. look into your victim's eyes as your blades steal away his life, and you can take his power, his essence, into your own. i remember everyone i have ever killed. they have become part of me. they are my power. i will teach you to be a hunter: you the spider, the mark your prey. now, listen carefully: i have a paying job from some...associates of mine. if you make the kill, i will split the profits with you. headmaster lee would not approve, but never mind that. speak with me when you are ready to accept the task and learn new skills; we will head to the village to finish this job afterward.",
+              "body_dialog_id": null,
+              "choices": [
+                {
+                  "choice_index": 1,
+                  "choice_text_raw": "I am ready to test my skills!",
+                  "choice_text_norm": "i am ready to test my skills!",
+                  "choice_dialog_id": null,
+                  "intent": "accept",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 2,
+                  "choice_text_raw": "This sounds a little out of my league.",
+                  "choice_text_norm": "this sounds a little out of my league.",
+                  "choice_dialog_id": null,
+                  "intent": "decline",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 3,
+                  "choice_text_raw": "Your target is Swift Honorclaw. Keep his name in your mind and do not falter when the time comes.",
+                  "choice_text_norm": "your target is swift honorclaw. keep his name in your mind and do not falter when the time comes.",
+                  "choice_dialog_id": null,
+                  "intent": "progress",
+                  "send_priority": 100
+                }
+              ],
+              "expected_next_body_text_norm": null,
+              "notes": null
+            },
+            {
+              "step_index": 2,
+              "body_text_raw": "Are you finally ready? We will be lucky if our target has not died of old age by now.... Come then, we need to get moving.\nThis way! Your target is just ahead.\nHeadmaster Lee would forbid you from performing any real work while still a student at the monastery, though this is a part of what it means to be an Assassin. This is our little secret.\nMy employer in this matter assures me that our target has committed a crime, though I do not ask excessive questions.\nThere he is! Quickly!",
+              "body_text_norm": "are you finally ready? we will be lucky if our target has not died of old age by now.... come then, we need to get moving. this way! your target is just ahead. headmaster lee would forbid you from performing any real work while still a student at the monastery, though this is a part of what it means to be an assassin. this is our little secret. my employer in this matter assures me that our target has committed a crime, though i do not ask excessive questions. there he is! quickly!",
+              "body_dialog_id": null,
+              "choices": [],
+              "expected_next_body_text_norm": null,
+              "notes": "In-mission dialogue before kill."
+            },
+            {
+              "step_index": 3,
+              "body_text_raw": "You did it. Do you feel his life running through your veins?\nHere is your share of the gold. As I said before, I would appreciate your not mentioning the specifics of our lesson to Headmaster Lee. We do not want to be on the sharp side of her steel. There were no witnesses to our actions, so if word gets back to either Headmaster Lee or the Tengu I'll know how it happened. I hope we have an understanding.",
+              "body_text_norm": "you did it. do you feel his life running through your veins? here is your share of the gold. as i said before, i would appreciate your not mentioning the specifics of our lesson to headmaster lee. we do not want to be on the sharp side of her steel. there were no witnesses to our actions, so if word gets back to either headmaster lee or the tengu i'll know how it happened. i hope we have an understanding.",
+              "body_dialog_id": null,
+              "choices": [],
+              "expected_next_body_text_norm": null,
+              "notes": "Reward dialogue"
+            }
+          ],
+          "sources": [
+            {
+              "url": "https://wiki.guildwars.com/wiki/Dual_Strike",
+              "evidence_quote": "I imagine Jinzo spoke to you of duty and of balance... Speak with me when you are ready to accept the task and learn new skills; we will head to the village to finish this job afterward."
+            },
+            {
+              "url": "https://wiki.guildwars.com/wiki/Dual_Strike",
+              "evidence_quote": "Are you finally ready? We will be lucky if our target has not died of old age by now...."
+            },
+            {
+              "url": "https://wiki.guildwars.com/wiki/Dual_Strike",
+              "evidence_quote": "You did it. Do you feel his life running through your veins?... I hope we have an understanding."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "quest_name": "A Formal Introduction",
+      "quest_wiki_url": "https://wiki.guildwars.com/wiki/A_Formal_Introduction",
+      "campaign": "Factions",
+      "map_name": "Linnok Courtyard",
+      "map_id": null,
+      "npc_entries": [
+        {
+          "npc_name": "Master Togo",
+          "npc_wiki_url": "https://wiki.guildwars.com/wiki/Master_Togo",
+          "model_id": null,
+          "npc_uid_hint": {
+            "map_id": null,
+            "model_id": null,
+            "name": "Master Togo"
+          },
+          "dialog_steps": [
+            {
+              "step_index": 1,
+              "body_text_raw": "Now that you have chosen a secondary profession, I have a rare honor to bestow upon you. Every year I bring my most promising students to the minister for a formal introduction. This year I have selected you, along with Yijo here, for this honor.\nIf you accept my invitation, meet me in Sunqua Vale just outside the monastery gates, and we shall proceed to Minister Cho's Estate.",
+              "body_text_norm": "now that you have chosen a secondary profession, i have a rare honor to bestow upon you. every year i bring my most promising students to the minister for a formal introduction. this year i have selected you, along with yijo here, for this honor. if you accept my invitation, meet me in sunqua vale just outside the monastery gates, and we shall proceed to minister cho's estate.",
+              "body_dialog_id": null,
+              "choices": [
+                {
+                  "choice_index": 1,
+                  "choice_text_raw": "Of course I accept, Master Togo.",
+                  "choice_text_norm": "of course i accept, master togo.",
+                  "choice_dialog_id": null,
+                  "intent": "accept",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 2,
+                  "choice_text_raw": "I am unworthy of such an honor.",
+                  "choice_text_norm": "i am unworthy of such an honor.",
+                  "choice_dialog_id": null,
+                  "intent": "decline",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 3,
+                  "choice_text_raw": "Meet me in Sunqua Vale just outside the monastery gates.",
+                  "choice_text_norm": "meet me in sunqua vale just outside the monastery gates.",
+                  "choice_dialog_id": null,
+                  "intent": "progress",
+                  "send_priority": 100
+                }
+              ],
+              "expected_next_body_text_norm": null,
+              "notes": null
+            },
+            {
+              "step_index": 2,
+              "body_text_raw": "Let us proceed to the estate; the minister is expecting us.",
+              "body_text_norm": "let us proceed to the estate; the minister is expecting us.",
+              "body_dialog_id": null,
+              "choices": [],
+              "expected_next_body_text_norm": null,
+              "notes": null
+            }
+          ],
+          "sources": [
+            {
+              "url": "https://wiki.guildwars.com/wiki/A_Formal_Introduction",
+              "evidence_quote": "Now that you have chosen a secondary profession... If you accept my invitation, meet me in Sunqua Vale..."
+            },
+            {
+              "url": "https://wiki.guildwars.com/wiki/A_Formal_Introduction",
+              "evidence_quote": "Let us proceed to the estate; the minister is expecting us."
+            }
+          ]
+        },
+        {
+          "npc_name": "Guardsman Zui",
+          "npc_wiki_url": "https://wiki.guildwars.com/wiki/Guardsman_Zui",
+          "model_id": null,
+          "npc_uid_hint": {
+            "map_id": null,
+            "model_id": null,
+            "name": "Guardsman Zui"
+          },
+          "dialog_steps": [
+            {
+              "step_index": 1,
+              "body_text_raw": "Seems you are the new bunch of students Master Togo has been training. Most promising indeed! No doubt my son will be trained at the monastery when he comes of age. I will need to speak with Master Togo before I can let you in.",
+              "body_text_norm": "seems you are the new bunch of students master togo has been training. most promising indeed! no doubt my son will be trained at the monastery when he comes of age. i will need to speak with master togo before i can let you in.",
+              "body_dialog_id": null,
+              "choices": [
+                {
+                  "choice_index": 1,
+                  "choice_text_raw": "I am honored to be here.",
+                  "choice_text_norm": "i am honored to be here.",
+                  "choice_dialog_id": null,
+                  "intent": "progress",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 2,
+                  "choice_text_raw": "Let's go! We were trained by the best!",
+                  "choice_text_norm": "let's go! we were trained by the best!",
+                  "choice_dialog_id": null,
+                  "intent": "travel",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 3,
+                  "choice_text_raw": "Yes.",
+                  "choice_text_norm": "yes.",
+                  "choice_dialog_id": null,
+                  "intent": "travel",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 4,
+                  "choice_text_raw": "No.",
+                  "choice_text_norm": "no.",
+                  "choice_dialog_id": null,
+                  "intent": "decline",
+                  "send_priority": 100
+                },
+                {
+                  "choice_index": 5,
+                  "choice_text_raw": "I think I need more training.",
+                  "choice_text_norm": "i think i need more training.",
+                  "choice_dialog_id": null,
+                  "intent": "decline",
+                  "send_priority": 100
+                }
+              ],
+              "expected_next_body_text_norm": null,
+              "notes": null
+            }
+          ],
+          "sources": [
+            {
+              "url": "https://wiki.guildwars.com/wiki/A_Formal_Introduction",
+              "evidence_quote": "Seems you are the new bunch of students... I will need to speak with Master Togo before I can let you in."
+            },
+            {
+              "url": "https://wiki.guildwars.com/wiki/A_Formal_Introduction",
+              "evidence_quote": "[Yes] I am honored to be here. ... [Yes] Let's go! We were trained by the best! ... [Yes] Yes. ... [No] No. ... [No] I think I need more training."
+            }
+          ]
+        },
+        {
+          "npc_name": "Guardsman Kayao",
+          "npc_wiki_url": "https://wiki.guildwars.com/wiki/Guardsman_Kayao",
+          "model_id": null,
+          "npc_uid_hint": {
+            "map_id": null,
+            "model_id": null,
+            "name": "Guardsman Kayao"
+          },
+          "dialog_steps": [
+            {
+              "step_index": 1,
+              "body_text_raw": "I am at a complete loss as to what is happening! It appears that the guards on staff just suddenly went mad. They are either fighting each other or fighting the animals that have been afflicted. The few who managed to keep their wits say they saw a dark form appear and disappear, but none could give me more information than that. We desperately need Togo's help in this situation. It really is a shame you students had to be involved in this mess.",
+              "body_text_norm": "i am at a complete loss as to what is happening! it appears that the guards on staff just suddenly went mad. they are either fighting each other or fighting the animals that have been afflicted. the few who managed to keep their wits say they saw a dark form appear and disappear, but none could give me more information than that. we desperately need togo's help in this situation. it really is a shame you students had to be involved in this mess.",
+              "body_dialog_id": null,
+              "choices": [],
+              "expected_next_body_text_norm": null,
+              "notes": "Reward dialogue"
+            }
+          ],
+          "sources": [
+            {
+              "url": "https://wiki.guildwars.com/wiki/A_Formal_Introduction",
+              "evidence_quote": "I am at a complete loss as to what is happening!... It really is a shame you students had to be involved in this mess."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "unresolved": [
+    {
+      "quest_name": "Mantid Hatchlings",
+      "npc_name": "Instructor Ng",
+      "missing": [
+        "map_id",
+        "model_id",
+        "choice_text",
+        "branch_order"
+      ],
+      "reason": "Quest not processed in this extraction run"
+    },
+    {
+      "quest_name": "Seek Out Headmaster Zhan",
+      "npc_name": "Headmaster Zhan",
+      "missing": [
+        "map_id",
+        "model_id",
+        "choice_text",
+        "branch_order"
+      ],
+      "reason": "Quest not processed in this extraction run"
+    }
+  ]
+}
