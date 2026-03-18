@@ -28,7 +28,11 @@ ZAISHEN_QUEST_LIMIT_MESSAGES = {
     "The Zaishen only allow 3 missions to be undertaken at one time.",
     "Zaishen bounties are limited to 3 at one time.",
     "Zaishen battle assignments are limited to 3 at one time.",
+}
+ZAISHEN_NO_MORE_QUESTS_MESSAGES = {
     "There are no more quests available here today, but other signs may have more postings from the Zaishen.",
+}
+ZAISHEN_PENDING_OBJECTIVE_MESSAGES = {
     "There are still threats that remain. Return when you have slain all of the foes that await you at your destination."
 }
 ZAISHEN_DECLINE_MESSAGES = {
@@ -205,6 +209,10 @@ class ZaishenBountyState:
         self.last_choices: List[str] = []
         self.last_quest_log_names: List[str] = []
         self.completed_results: List[str] = []
+        self.current_pass_label = "initial"
+        self.successful_quest_names: List[str] = []
+        self.retryable_failed_quest_names: List[str] = []
+        self.final_retry_targets: List[str] = []
         self.last_error = ""
         self.stop_requested = False
 
@@ -227,6 +235,10 @@ class ZaishenBountyState:
         self.last_choices = []
         self.last_quest_log_names = []
         self.completed_results = []
+        self.current_pass_label = "initial"
+        self.successful_quest_names = []
+        self.retryable_failed_quest_names = []
+        self.final_retry_targets = []
         self.last_error = ""
         self.stop_requested = False
 
@@ -256,7 +268,7 @@ class ZaishenBountyState:
         else:
             Py4GW.Console.Log(MODULE_NAME, message, Py4GW.Console.MessageType.Info)
 
-    def begin_npc(self, target: dict) -> None:
+    def begin_npc(self, target: dict, *, pass_label: str = "initial") -> None:
         self.current_npc_name = str(target.get("npc_name", "") or "")
         self.current_npc_ordinal = int(target.get("run_order", 0) or 0)
         self.current_target_model_id = int(target.get("model_id", 0) or 0)
@@ -275,9 +287,32 @@ class ZaishenBountyState:
         self.npc_xy = (float(npc_xy[0]), float(npc_xy[1])) if isinstance(npc_xy, (list, tuple)) and len(npc_xy) >= 2 else (0.0, 0.0)
         self.skip_current_npc = False
         self.last_choices = []
+        self.current_pass_label = str(pass_label or "initial")
 
     def append_result(self, message: str) -> None:
         self.completed_results.append(message)
+
+    def record_quest_failure(self, *, retryable: bool = True) -> None:
+        quest_name = str(self.current_npc_name or "").strip()
+        if not quest_name:
+            return
+        if self.current_pass_label == "final retry":
+            return
+        if retryable and quest_name not in self.retryable_failed_quest_names and quest_name not in self.successful_quest_names:
+            self.retryable_failed_quest_names.append(quest_name)
+
+    def record_quest_success(self) -> None:
+        quest_name = str(self.current_npc_name or "").strip()
+        if not quest_name:
+            return
+        if quest_name not in self.successful_quest_names:
+            self.successful_quest_names.append(quest_name)
+        self.retryable_failed_quest_names = [
+            name for name in self.retryable_failed_quest_names if name != quest_name
+        ]
+        self.final_retry_targets = [
+            name for name in self.final_retry_targets if name != quest_name
+        ]
 
 
 state = ZaishenBountyState()
@@ -320,6 +355,13 @@ def _current_target_label() -> str:
     return state.current_npc_name or "Current NPC"
 
 
+def _current_attempt_label() -> str:
+    label = _current_target_label()
+    if state.current_pass_label == "final retry":
+        return f"{label} [final retry]"
+    return label
+
+
 def _get_selected_target_by_name(quest_name: str) -> Dict[str, Any] | None:
     normalized = str(quest_name or "").strip()
     for target in state.quest_targets:
@@ -338,6 +380,19 @@ def _active_dialog_message() -> str:
 def _is_zaishen_quest_limit_message(message: str) -> bool:
     normalized = _normalize_dialog_label(message)
     return any(normalized == _normalize_dialog_label(candidate) for candidate in ZAISHEN_QUEST_LIMIT_MESSAGES)
+
+
+def _classify_zaishen_dialog_rejection(message: str) -> tuple[str, bool, bool] | None:
+    normalized = _normalize_dialog_label(message)
+    if not normalized:
+        return None
+    if any(normalized == _normalize_dialog_label(candidate) for candidate in ZAISHEN_QUEST_LIMIT_MESSAGES):
+        return ("quest limit reached", False, False)
+    if any(normalized == _normalize_dialog_label(candidate) for candidate in ZAISHEN_NO_MORE_QUESTS_MESSAGES):
+        return ("no more Zaishen quests are available from this sign today", False, False)
+    if any(normalized == _normalize_dialog_label(candidate) for candidate in ZAISHEN_PENDING_OBJECTIVE_MESSAGES):
+        return ("current Zaishen objective is still active and must be finished first", False, False)
+    return None
 
 
 def _is_confirmation_button_text(value: str) -> bool:
@@ -368,6 +423,10 @@ def _dialog_belongs_to_current_npc() -> bool:
     return int(agent_id) != 0 and int(agent_id) == int(state.npc_agent_id)
 
 
+def _current_npc_dialog_is_ready() -> bool:
+    return _dialog_is_open() and _dialog_belongs_to_current_npc()
+
+
 def _distance_to_current_npc() -> float:
     if state.npc_agent_id == 0:
         return float("inf")
@@ -390,7 +449,7 @@ def _resolve_offered_quest_name(button) -> str:
     if catalog_text and not _is_confirmation_button_text(catalog_text):
         return catalog_text
 
-    active_message = _active_dialog_message()
+    active_message = _active_dialog_message() if _current_npc_dialog_is_ready() else ""
     if active_message and not _is_confirmation_button_text(active_message) and not _is_zaishen_quest_limit_message(active_message):
         return active_message
 
@@ -403,9 +462,17 @@ def _yield_stop_with_status(message: str, *, error: bool = False):
     yield
 
 
-def _yield_skip_current_npc(message: str, *, error: bool = False):
-    result = f"{_current_target_label()}: {message}"
+def _yield_skip_current_npc(
+    message: str,
+    *,
+    error: bool = False,
+    retryable: bool = True,
+    counts_as_failure: bool = True,
+):
+    result = f"{_current_attempt_label()}: {message}"
     state.skip_current_npc = True
+    if counts_as_failure:
+        state.record_quest_failure(retryable=retryable)
     state.append_result(result)
     state.set_status(result, error=error)
     yield from Routines.Yield.wait(100)
@@ -540,8 +607,27 @@ def _make_prepare_npc(quest_name: str):
                 error=True,
             )
             return
-        state.begin_npc(target)
+        state.begin_npc(target, pass_label="initial")
         state.set_status(f"Preparing {_current_target_label()} in forced order.")
+        yield from Routines.Yield.wait(100)
+    return _prepare
+
+
+def _make_prepare_retry_npc(quest_name: str):
+    def _prepare():
+        target = _get_selected_target_by_name(quest_name)
+        if target is None:
+            yield from _yield_stop_with_status(
+                f"Selected Zaishen route is missing '{quest_name}' during the final retry pass.",
+                error=True,
+            )
+            return
+        state.begin_npc(target, pass_label="final retry")
+        if quest_name not in state.final_retry_targets:
+            state.skip_current_npc = True
+            yield
+            return
+        state.set_status(f"Final retry pass: re-attempting {_current_target_label()} after another Zaishen quest succeeded.")
         yield from Routines.Yield.wait(100)
     return _prepare
 
@@ -588,7 +674,7 @@ def _move_to_current_npc():
     previous_approach_distance = float("inf")
     stagnant_ticks = 0
     while time.monotonic() < deadline:
-        if _dialog_belongs_to_current_npc():
+        if _current_npc_dialog_is_ready():
             yield from Routines.Yield.wait(150)
             return
 
@@ -634,7 +720,7 @@ def _interact_with_current_npc():
         yield from _yield_skip_current_npc("NPC target is missing before interact", error=True)
         return
 
-    if _dialog_belongs_to_current_npc():
+    if _current_npc_dialog_is_ready():
         yield from Routines.Yield.wait(250)
         return
 
@@ -648,7 +734,7 @@ def _interact_with_current_npc():
         yield from Routines.Yield.Player.InteractAgent(state.npc_agent_id)
         settle_deadline = time.monotonic() + 1.2
         while time.monotonic() < settle_deadline:
-            if _dialog_belongs_to_current_npc():
+            if _current_npc_dialog_is_ready():
                 yield from Routines.Yield.wait(250)
                 return
             yield from Routines.Yield.wait(100)
@@ -672,13 +758,19 @@ def _resolve_first_offer_dialog():
     confirmation_label = _normalize_dialog_label(state.confirmation_text)
 
     while time.monotonic() < deadline:
-        if _dialog_is_open() and not _dialog_belongs_to_current_npc():
+        if not _current_npc_dialog_is_ready():
             yield from Routines.Yield.wait(150)
             continue
 
         active_message = _active_dialog_message()
-        if _is_zaishen_quest_limit_message(active_message):
-            yield from _yield_skip_current_npc("Zaishen quest limit reached; skipping this NPC")
+        rejection = _classify_zaishen_dialog_rejection(active_message)
+        if rejection is not None:
+            rejection_reason, retryable, counts_as_failure = rejection
+            yield from _yield_skip_current_npc(
+                f"{rejection_reason}; dialog says '{active_message}'",
+                retryable=retryable,
+                counts_as_failure=counts_as_failure,
+            )
             return
         buttons = Dialog.get_active_dialog_buttons()
         state.last_choices = [
@@ -747,7 +839,11 @@ def _skip_if_offered_quest_already_present():
 
     target_name = _normalize_quest_name(state.offered_quest_name)
     if any(_normalize_quest_name(name) == target_name for name in state.last_quest_log_names):
-        yield from _yield_skip_current_npc(f"quest '{state.offered_quest_name}' is already in the quest log")
+        yield from _yield_skip_current_npc(
+            f"quest '{state.offered_quest_name}' is already in the quest log",
+            retryable=False,
+            counts_as_failure=False,
+        )
         return
 
     state.set_status(f"{_current_target_label()}: quest '{state.offered_quest_name}' is not in the quest log. Proceeding to accept it.")
@@ -783,9 +879,19 @@ def _resolve_confirmation_dialog():
     deadline = time.monotonic() + (max(1000, int(state.dialog_timeout_ms)) / 1000.0)
 
     while time.monotonic() < deadline:
+        if not _current_npc_dialog_is_ready():
+            yield from Routines.Yield.wait(150)
+            continue
+
         active_message = _active_dialog_message()
-        if _is_zaishen_quest_limit_message(active_message):
-            yield from _yield_skip_current_npc("Zaishen quest limit reached; skipping this NPC")
+        rejection = _classify_zaishen_dialog_rejection(active_message)
+        if rejection is not None:
+            rejection_reason, retryable, counts_as_failure = rejection
+            yield from _yield_skip_current_npc(
+                f"{rejection_reason}; dialog says '{active_message}'",
+                retryable=retryable,
+                counts_as_failure=counts_as_failure,
+            )
             return
         buttons = Dialog.get_active_dialog_buttons()
         state.last_choices = [
@@ -826,16 +932,47 @@ def _verify_quest_added():
         return
     target_name = _normalize_quest_name(state.offered_quest_name)
     if not target_name:
-        state.append_result(f"{_current_target_label()}: accepted quest flow but NPC did not expose a readable quest name for verification")
-        state.set_status(f"{_current_target_label()}: accepted quest flow but verification name was unavailable.")
+        state.record_quest_success()
+        state.append_result(f"{_current_attempt_label()}: accepted quest flow but NPC did not expose a readable quest name for verification")
+        state.set_status(f"{_current_attempt_label()}: accepted quest flow but verification name was unavailable.")
         yield
         return
     if not any(_normalize_quest_name(name) == target_name for name in state.last_quest_log_names):
         state.last_quest_log_names.append(state.offered_quest_name)
-    result = f"{_current_target_label()}: sent acceptance for '{state.offered_quest_name}'"
+    state.record_quest_success()
+    result = f"{_current_attempt_label()}: sent acceptance for '{state.offered_quest_name}'"
     state.append_result(result)
     state.set_status(result)
     yield
+
+
+def _plan_final_retry_pass():
+    state.current_pass_label = "initial"
+    state.final_retry_targets = []
+
+    if not state.retryable_failed_quest_names:
+        state.set_status("Initial Zaishen pass finished with no retryable failures.")
+        yield
+        return
+
+    if not state.successful_quest_names:
+        state.set_status("Initial Zaishen pass had failures but no successful quest takes; skipping the final retry pass.")
+        yield
+        return
+
+    state.final_retry_targets = [
+        quest_name
+        for quest_name in QUEST_TYPE_SEQUENCE
+        if quest_name in state.retryable_failed_quest_names
+    ]
+    if not state.final_retry_targets:
+        state.set_status("Initial Zaishen pass did not leave any failed quest types pending for the final retry pass.")
+        yield
+        return
+
+    retry_labels = ", ".join(state.final_retry_targets)
+    state.set_status(f"Initial Zaishen pass finished. Final retry pass scheduled for: {retry_labels}.")
+    yield from Routines.Yield.wait(100)
 
 
 def _finish_run():
@@ -864,6 +1001,22 @@ def _create_bot_routine(bot_instance: Botting) -> None:
         bot_instance.States.AddCustomState(_resolve_confirmation_dialog, f"Resolve 'I can do that!' for {quest_name}")
         bot_instance.States.AddCustomState(_send_confirmation_dialog, f"Send confirmation for {quest_name}")
         bot_instance.States.AddCustomState(_verify_quest_added, f"Verify quest added for {quest_name}")
+
+    bot_instance.States.AddHeader("Plan Final Retry Pass")
+    bot_instance.States.AddCustomState(_plan_final_retry_pass, "Plan final retry pass")
+
+    for quest_name in QUEST_TYPE_SEQUENCE:
+        bot_instance.States.AddHeader(f"Retry {quest_name}")
+        bot_instance.States.AddCustomState(_make_prepare_retry_npc(quest_name), f"Prepare retry {quest_name}")
+        bot_instance.States.AddCustomState(_resolve_current_npc, f"Resolve retry {quest_name}")
+        bot_instance.States.AddCustomState(_move_to_current_npc, f"Move retry {quest_name}")
+        bot_instance.States.AddCustomState(_interact_with_current_npc, f"Interact retry {quest_name}")
+        bot_instance.States.AddCustomState(_resolve_first_offer_dialog, f"Resolve retry first offered dialog for {quest_name}")
+        bot_instance.States.AddCustomState(_skip_if_offered_quest_already_present, f"Skip retry {quest_name} if offered quest already exists")
+        bot_instance.States.AddCustomState(_send_first_offer_dialog, f"Send retry first offered dialog for {quest_name}")
+        bot_instance.States.AddCustomState(_resolve_confirmation_dialog, f"Resolve retry 'I can do that!' for {quest_name}")
+        bot_instance.States.AddCustomState(_send_confirmation_dialog, f"Send retry confirmation for {quest_name}")
+        bot_instance.States.AddCustomState(_verify_quest_added, f"Verify retry quest added for {quest_name}")
 
     bot_instance.States.AddHeader("Finish")
     bot_instance.States.AddCustomState(_finish_run, "Finish Zaishen trio")
@@ -910,7 +1063,8 @@ def _draw_main_status() -> None:
     PyImGui.text_wrapped(
         "The widget travels to Embark Beach, reads your actual spawn position, picks the nearest recorded Zaishen trio cluster, then handles that local trio in fixed order: "
         "Mission -> Bounty -> Vanquish. Each stop resolves the nearest matching live NPC by recorded name/model/position, reads the offered quest "
-        "from the live dialog, compares that NPC-provided quest name against the current quest log, and only sends live dialog IDs when the quest is not already present."
+        "from the live dialog, compares that NPC-provided quest name against the current quest log, and only sends live dialog IDs when the quest is not already present. "
+        "If one quest take fails while another one succeeds, the widget schedules one final retry pass for the failed quest types at the end."
     )
     if active_quests:
         preview = ", ".join(active_quests[:6])
@@ -944,6 +1098,7 @@ def _draw_settings() -> None:
     PyImGui.bullet_text("The widget does not require a quest ID, offer dialog ID, or quest name.")
     PyImGui.bullet_text("It always travels to Embark Beach, selects the nearest recorded Zaishen trio for the current spawn, and handles the trio in fixed order: Mission -> Bounty -> Vanquish.")
     PyImGui.bullet_text("The duplicate guard uses the label or catalog text of each NPC's first live offered dialog choice.")
+    PyImGui.bullet_text("If at least one quest take succeeds, any failed quest types get one final retry pass at the end.")
 
 
 def _draw_help() -> None:
@@ -955,6 +1110,10 @@ def _draw_help() -> None:
     PyImGui.text_wrapped(
         "The duplicate guard reads the offered quest name from the live button text first, then falls back to dialog catalog/body text when the NPC opens "
         "directly on the confirmation choice. If that quest name is already present in the quest log, that NPC is skipped and the widget continues to the next NPC in the selected local trio."
+    )
+    PyImGui.separator()
+    PyImGui.text_wrapped(
+        "When one quest take fails but at least one other quest take succeeds during the same run, the widget adds one final retry pass at the end for the failed quest types."
     )
 
 
