@@ -684,7 +684,6 @@ class Player:
         ActionQueueManager().AddAction("ACTION",
         PlayerMethods.SendSkillTrainerDialog, skill_id)
         
-    
     #region Not Worked
     @staticmethod
     def SendDialog(dialog_id: str | int):
