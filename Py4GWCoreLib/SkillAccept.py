@@ -117,6 +117,21 @@ class SkillAcceptWidget:
             )
         )
 
+    def apply_pending_skill_replace(
+        self,
+        skill_id: int,
+        slot_index: int,
+        copy_id: Optional[int] = None,
+        agent_id: int = 0,
+    ) -> bool:
+        if PySkillAccept is None:
+            return False
+        return bool(
+            PySkillAccept.PySkillAccept.apply_pending_skill_replace(
+                skill_id, slot_index, copy_id, agent_id
+            )
+        )
+
 
 _skill_accept_widget_instance: Optional[SkillAcceptWidget] = None
 
@@ -146,3 +161,12 @@ def accept_offered_skill(skill_id: int) -> bool:
 
 def accept_offered_skill_replace(skill_id: int, slot_index: int, copy_id: Optional[int] = None) -> bool:
     return get_skill_accept_widget().accept_offered_skill_replace(skill_id, slot_index, copy_id)
+
+
+def apply_pending_skill_replace(
+    skill_id: int,
+    slot_index: int,
+    copy_id: Optional[int] = None,
+    agent_id: int = 0,
+) -> bool:
+    return get_skill_accept_widget().apply_pending_skill_replace(skill_id, slot_index, copy_id, agent_id)
