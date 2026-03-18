@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,6 +21,7 @@ _EXPORT_DIR = os.path.join(_ROOT_DIRECTORY, "Widgets", "Data", "Dialog", "Export
 _DUMP_PREFIX = "DialogDebugMonitor_dump_"
 
 _HISTORY_LIMIT = 140
+_INLINE_CHOICE_RE = re.compile(r"<a\s*=\s*([^>]+)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
 
 
 class DialogMonitorState:
@@ -85,6 +87,9 @@ class DialogMonitorState:
         choices = dialog_widget.get_active_dialog_buttons()
         last_selected = dialog_widget.get_last_selected_dialog_id()
 
+        if active is not None and not choices:
+            choices = _extract_inline_choices_from_active(active)
+
         self.current_choices = choices
         self.current_active = active
 
@@ -103,6 +108,72 @@ class DialogMonitorState:
         if last_selected and last_selected != self.last_selected_dialog_id:
             self.last_selected_dialog_id = last_selected
             self.last_selected_seen = time.time()
+
+
+def _parse_inline_choice_dialog_id(raw_value: Any) -> int:
+    value = str(raw_value or "").strip()
+    if not value:
+        return 0
+    try:
+        return int(value, 0)
+    except Exception:
+        return 0
+
+
+def _sanitize_inline_choice_label(value: Any) -> str:
+    sanitizer = getattr(Dialog, "sanitize_dialog_text", None)
+    if callable(sanitizer):
+        try:
+            text = str(sanitizer(value) or "")
+        except Exception:
+            text = str(value or "")
+    else:
+        text = str(value or "")
+    return text if text else "<empty>"
+
+
+class _InlineDialogChoice:
+    def __init__(self, dialog_id: int, label: str) -> None:
+        self.dialog_id = int(dialog_id)
+        self.button_icon = 0
+        self.message = label
+        self.message_decoded = label
+        self.message_decode_pending = False
+
+
+def _extract_inline_choices_from_active_local(active: Any) -> List[Any]:
+    raw_message = getattr(active, "raw_message", None)
+    if raw_message is None:
+        raw_message = getattr(active, "message", "")
+    text = str(raw_message or "")
+    if not text or "<a=" not in text.lower():
+        return []
+
+    choices: List[Any] = []
+    seen: set[tuple[int, str]] = set()
+    for match in _INLINE_CHOICE_RE.finditer(text):
+        dialog_id = _parse_inline_choice_dialog_id(match.group(1))
+        if dialog_id == 0:
+            continue
+        label = _sanitize_inline_choice_label(match.group(2))
+        dedupe_key = (dialog_id, label)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        choices.append(_InlineDialogChoice(dialog_id, label))
+    return choices
+
+
+def _extract_inline_choices_from_active(active: Any) -> List[Any]:
+    helper = getattr(Dialog, "extract_inline_dialog_choices_from_active", None)
+    if callable(helper):
+        try:
+            result = helper(active)
+            if result is not None:
+                return list(result)
+        except Exception:
+            pass
+    return _extract_inline_choices_from_active_local(active)
 
 
 _state = DialogMonitorState()
@@ -637,11 +708,11 @@ def _draw_choice_panel(active, choices) -> None:
         return
 
     if PyImGui.begin_child("ChoicePanel", (0, 220), True, PyImGui.WindowFlags.NoFlag):
-        for choice in choices:
+        for index, choice in enumerate(choices):
             label = _choice_label(choice)
             PyImGui.text(f"[{_format_dialog_id(choice.dialog_id)}] {label}")
             _same_line()
-            _copy_dialog_id_button(choice.dialog_id, f"choice_{choice.dialog_id}")
+            _copy_dialog_id_button(choice.dialog_id, f"choice_{choice.dialog_id}_{index}")
     PyImGui.end_child()
 
 

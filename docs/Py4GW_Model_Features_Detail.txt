@@ -60,10 +60,13 @@ Combat systems:
 - `CombatEvents`: combat telemetry and derived combat-state layer, including callback-style reactive events.
 
 UI and runtime-facing systems:
+- `Dialog`: live dialog state, active choices, callback/journal observability, turn analysis, storage sync, text sanitization, and inline-choice extraction for embedded anchor-based dialog bodies.
+- `DialogCatalog`: static dialog metadata/text lookup, availability checks, enumeration, decoded-text lookup, and decode-status/cache helpers.
 - `UIManager`: foundational UI frame/message orchestration and frame hierarchy system.
 - `Overlay`: singleton overlay/drawlist composition layer.
 - `DXOverlay`: structured DirectX geometry/texture rendering façade over `Py2DRenderer`.
 - `ImGui`: higher-level themed UI toolkit over `PyImGui` and `ImGui_src`.
+- `SkillAccept`: pending skill-offer inspection plus accept/replace execution and related debug/frame-event helpers.
 
 Contextual systems:
 - `Context`: typed native context gateway over `native_src`.
