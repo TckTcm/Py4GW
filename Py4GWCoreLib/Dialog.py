@@ -330,25 +330,37 @@ class ActiveDialogInfo:
         native_active_dialog=None,
         *,
         dialog_id: int = 0,
+        context_dialog_id: int = 0,
         agent_id: int = 0,
+        dialog_id_authoritative: bool = False,
         message: str = "",
         raw_message: str = "",
     ):
         if native_active_dialog is not None:
             self.native = native_active_dialog
-            self.dialog_id = native_active_dialog.dialog_id
-            self.agent_id = native_active_dialog.agent_id
+            self.dialog_id = int(getattr(native_active_dialog, "dialog_id", 0))
+            self.context_dialog_id = int(getattr(native_active_dialog, "context_dialog_id", 0))
+            self.agent_id = int(getattr(native_active_dialog, "agent_id", 0))
+            self.dialog_id_authoritative = bool(getattr(native_active_dialog, "dialog_id_authoritative", False))
             self.raw_message = str(getattr(native_active_dialog, "message", "") or "")
             self.message = _sanitize_dialog_text(self.raw_message)
         else:
             self.native = None
             self.dialog_id = dialog_id
+            self.context_dialog_id = context_dialog_id
             self.agent_id = agent_id
+            self.dialog_id_authoritative = dialog_id_authoritative
             self.raw_message = str(raw_message or message or "")
             self.message = _sanitize_dialog_text(message)
 
     def __repr__(self) -> str:
-        return f"ActiveDialogInfo(dialog_id=0x{self.dialog_id:04x}, agent_id={self.agent_id})"
+        return (
+            "ActiveDialogInfo("
+            f"dialog_id=0x{self.dialog_id:04x}, "
+            f"context_dialog_id=0x{self.context_dialog_id:04x}, "
+            f"authoritative={self.dialog_id_authoritative}, "
+            f"agent_id={self.agent_id})"
+        )
 
 
 class DialogButtonInfo:
@@ -475,6 +487,8 @@ class DialogCallbackJournalEntry:
         self.agent_id = int(getattr(native_info, "agent_id", 0))
         self.map_id = int(getattr(native_info, "map_id", 0))
         self.model_id = int(getattr(native_info, "model_id", 0))
+        self.dialog_id_authoritative = bool(getattr(native_info, "dialog_id_authoritative", False))
+        self.context_dialog_id_inferred = bool(getattr(native_info, "context_dialog_id_inferred", False))
         self.npc_uid = str(getattr(native_info, "npc_uid", "") or "")
         self.event_type = str(getattr(native_info, "event_type", "") or "")
         # Keep callback journal text raw; callers decide whether/how to sanitize.
@@ -512,7 +526,11 @@ class DialogWidget:
         native_info = PyDialog.PyDialog.get_active_dialog()
         if native_info is None:
             return None
-        if getattr(native_info, "dialog_id", 0) == 0 and getattr(native_info, "agent_id", 0) == 0:
+        if (
+            getattr(native_info, "dialog_id", 0) == 0
+            and getattr(native_info, "context_dialog_id", 0) == 0
+            and getattr(native_info, "agent_id", 0) == 0
+        ):
             return None
         return ActiveDialogInfo(native_info)
 
