@@ -440,6 +440,52 @@ def _event_incoming(event: Any) -> bool:
     return bool(_event_field(event, "incoming", 2, False))
 
 
+def _dialog_certainty_snapshot(event: Any, *, event_type: Optional[str] = None) -> Dict[str, Any]:
+    dialog_id = int(_event_field(event, "dialog_id", 3, 0) or 0)
+    context_dialog_id = int(_event_field(event, "context_dialog_id", 4, 0) or 0)
+    dialog_id_authoritative = bool(_event_field(event, "dialog_id_authoritative", -1, False))
+    context_dialog_id_inferred = bool(_event_field(event, "context_dialog_id_inferred", -1, False))
+    resolved_event_type = str(event_type or _event_field(event, "event_type", 9, "") or "").strip().lower()
+
+    if not dialog_id_authoritative and dialog_id != 0 and resolved_event_type != "recv_body":
+        dialog_id_authoritative = True
+    if not context_dialog_id_inferred and resolved_event_type == "recv_body" and context_dialog_id != 0:
+        context_dialog_id_inferred = True
+
+    if dialog_id_authoritative and dialog_id != 0:
+        short_label = "authoritative"
+        detail = "Direct dialog ID from the callback payload."
+    elif context_dialog_id_inferred and context_dialog_id != 0:
+        short_label = "inferred-context"
+        detail = "Body context inferred from the last sent dialog choice."
+    elif dialog_id != 0:
+        short_label = "dialog-id"
+        detail = "Dialog ID present but no explicit certainty flag was persisted."
+    elif context_dialog_id != 0:
+        short_label = "context-only"
+        detail = "Only a context dialog ID is available."
+    else:
+        short_label = "no-id"
+        detail = "No dialog ID context is available."
+
+    return {
+        "dialog_id": dialog_id,
+        "context_dialog_id": context_dialog_id,
+        "dialog_id_authoritative": dialog_id_authoritative,
+        "context_dialog_id_inferred": context_dialog_id_inferred,
+        "event_type": resolved_event_type,
+        "short_label": short_label,
+        "detail": detail,
+    }
+
+
+def _active_dialog_display_id(active: Any) -> int:
+    certainty = _dialog_certainty_snapshot(active)
+    if certainty["dialog_id_authoritative"] and certainty["dialog_id"] != 0:
+        return int(certainty["dialog_id"])
+    return int(certainty["context_dialog_id"])
+
+
 def _dialog_msg_name(message_id: int) -> str:
     names = {
         0x100000A6: "kDialogBody",
@@ -632,18 +678,31 @@ def _draw_current_state_panel(active, last_selected_id: int, dialog_active: bool
         PyImGui.text("No active dialog detected.")
         return
 
-    PyImGui.text(f"Active dialog ID: {_format_dialog_id(active.dialog_id)}")
-    _same_line()
-    _copy_dialog_id_button(active.dialog_id, "active_dialog")
+    certainty = _dialog_certainty_snapshot(active)
+    PyImGui.text(f"Dialog certainty: {certainty['short_label']}")
+    if certainty["dialog_id_authoritative"] and certainty["dialog_id"]:
+        PyImGui.text(f"Active dialog ID: {_format_dialog_id(certainty['dialog_id'])} [authoritative]")
+        _same_line()
+        _copy_dialog_id_button(certainty["dialog_id"], "active_dialog")
+    if certainty["context_dialog_id"]:
+        context_label = "Context dialog ID"
+        if certainty["context_dialog_id_inferred"]:
+            context_label += " [inferred]"
+        PyImGui.text(f"{context_label}: {_format_dialog_id(certainty['context_dialog_id'])}")
+        _same_line()
+        _copy_dialog_id_button(certainty["context_dialog_id"], "active_dialog_context")
+    PyImGui.text_wrapped(certainty["detail"])
 
     PyImGui.text(f"Agent ID: {active.agent_id}")
+    npc_name = Agent.GetNameByID(active.agent_id) if int(active.agent_id or 0) else ""
+    PyImGui.text(f"NPC name: {npc_name if npc_name else '<pending>'}")
     map_id = Map.GetMapID()
     model_id = Agent.GetModelID(active.agent_id) or 0
     PyImGui.text(f"Map ID: {map_id}")
     PyImGui.text(f"Model ID: {model_id}")
 
     if last_selected_id:
-        PyImGui.text(f"Last selected: {_format_dialog_id(last_selected_id)}")
+        PyImGui.text(f"Last selected choice: {_format_dialog_id(last_selected_id)} [authoritative]")
         _same_line()
         _copy_dialog_id_button(last_selected_id, "last_selected")
 
@@ -710,7 +769,7 @@ def _draw_choice_panel(active, choices) -> None:
     if PyImGui.begin_child("ChoicePanel", (0, 220), True, PyImGui.WindowFlags.NoFlag):
         for index, choice in enumerate(choices):
             label = _choice_label(choice)
-            PyImGui.text(f"[{_format_dialog_id(choice.dialog_id)}] {label}")
+            PyImGui.text(f"[{_format_dialog_id(choice.dialog_id)}] [authoritative] {label}")
             _same_line()
             _copy_dialog_id_button(choice.dialog_id, f"choice_{choice.dialog_id}_{index}")
     PyImGui.end_child()
@@ -828,17 +887,20 @@ def _draw_callback_journal_panel() -> None:
             event_type = str(event.get("event_type", "") or "")
             npc_uid = str(event.get("npc_uid", "") or "")
             event_text = str(event.get("text_raw", "") or "")
+            certainty = _dialog_certainty_snapshot(event, event_type=event_type)
             delta = (now - timestamp) if timestamp > 0 else 0.0
             line = (
                 f"[{delta:4.1f}s] {event_type} "
                 f"msg=0x{message_id:08X} id={_format_dialog_id(dialog_id)} "
-                f"ctx={_format_dialog_id(context_dialog_id)} agent={agent_id}"
+                f"ctx={_format_dialog_id(context_dialog_id)} "
+                f"[{certainty['short_label']}] agent={agent_id}"
             )
             if needle:
                 haystack = f"{line} {npc_uid} {event_text}".lower()
                 if needle not in haystack:
                     continue
             PyImGui.text_wrapped(line)
+            PyImGui.text_wrapped(certainty["detail"])
             if npc_uid:
                 PyImGui.text_wrapped(f"npc={npc_uid}")
             if event_text:
@@ -1006,6 +1068,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
             }
         )
     else:
+        active_issue_id = _active_dialog_display_id(active)
         if not active.message:
             diagnostics.append(
                 {
@@ -1013,7 +1076,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                     "rule": "live_empty_active_message",
                     "message": "Active dialog has empty body text.",
                     "turn_id": 0,
-                    "dialog_id": int(getattr(active, "dialog_id", 0) or 0),
+                    "dialog_id": active_issue_id,
                     "npc_uid": _state.current_npc_uid,
                 }
             )
@@ -1024,7 +1087,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                     "rule": "live_no_active_choices",
                     "message": "Active dialog has no outgoing choices.",
                     "turn_id": 0,
-                    "dialog_id": int(getattr(active, "dialog_id", 0) or 0),
+                    "dialog_id": active_issue_id,
                     "npc_uid": _state.current_npc_uid,
                 }
             )
@@ -1036,7 +1099,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                         "rule": "live_choice_decode_pending",
                         "message": "One or more choice labels are still decoding.",
                         "turn_id": 0,
-                        "dialog_id": int(getattr(active, "dialog_id", 0) or 0),
+                        "dialog_id": active_issue_id,
                         "npc_uid": _state.current_npc_uid,
                     }
                 )
@@ -1047,7 +1110,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                         "rule": "live_missing_choice_labels",
                         "message": "Some choices are missing labels.",
                         "turn_id": 0,
-                        "dialog_id": int(getattr(active, "dialog_id", 0) or 0),
+                        "dialog_id": active_issue_id,
                         "npc_uid": _state.current_npc_uid,
                     }
                 )
@@ -1136,14 +1199,14 @@ def draw_widget() -> None:
             PyImGui.table_set_column_index(0)
             _draw_current_state_panel(_state.current_active, _state.last_selected_dialog_id, dialog_active)
             PyImGui.separator()
+            _draw_choice_panel(_state.current_active, _state.current_choices)
+            PyImGui.separator()
             _draw_history_panel()
 
             PyImGui.table_set_column_index(1)
             _draw_raw_logs_panel()
             PyImGui.separator()
             _draw_callback_journal_panel()
-            PyImGui.separator()
-            _draw_choice_panel(_state.current_active, _state.current_choices)
 
             PyImGui.end_table()
 
