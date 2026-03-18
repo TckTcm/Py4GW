@@ -1202,6 +1202,21 @@ class DialogWidget:
             return False
         return bool(_get_skill_accept_widget().accept_offered_skill_replace(skill_id, slot_index, copy_id))
 
+    def apply_pending_skill_replace(
+        self,
+        skill_id: int,
+        slot_index: int,
+        copy_id: Optional[int] = None,
+        agent_id: int = 0,
+    ) -> bool:
+        if _get_skill_accept_widget is None:
+            return False
+        return bool(
+            _get_skill_accept_widget().apply_pending_skill_replace(
+                skill_id, slot_index, copy_id, agent_id
+            )
+        )
+
 
 _dialog_widget_instance: Optional[DialogWidget] = None
 
@@ -1635,3 +1650,12 @@ def accept_offered_skill(skill_id: int) -> bool:
 
 def accept_offered_skill_replace(skill_id: int, slot_index: int, copy_id: Optional[int] = None) -> bool:
     return get_dialog_widget().accept_offered_skill_replace(skill_id, slot_index, copy_id)
+
+
+def apply_pending_skill_replace(
+    skill_id: int,
+    slot_index: int,
+    copy_id: Optional[int] = None,
+    agent_id: int = 0,
+) -> bool:
+    return get_dialog_widget().apply_pending_skill_replace(skill_id, slot_index, copy_id, agent_id)
