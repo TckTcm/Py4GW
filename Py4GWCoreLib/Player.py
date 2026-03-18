@@ -693,7 +693,6 @@ class Player:
         "ACTION",
         PlayerMethods.SendBalthazarSkillUnlockDialog, skill_id, use_pvp_remap)
         
-    
     #region Not Worked
     @staticmethod
     def SendDialog(dialog_id: str | int):
