@@ -82,6 +82,7 @@ from .DXOverlay import *
 from .UIManager import *
 from .Routines import *
 from .SkillManager import *
+from .BalthazarSkillUnlock import *
 from .GlobalCache import GLOBAL_CACHE
 from .Pathing import AutoPathing
 from .BuildMgr import BuildMgr
