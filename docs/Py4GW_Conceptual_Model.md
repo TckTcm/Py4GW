@@ -272,7 +272,8 @@ Known modules/surfaces include:
 
 - `SkillAccept`
   - Pending skill-offer and skill-acceptance surface over the native skill-accept module.
-  - It owns pending skill listing, pending skill debug/frame-event inspection, and the active acceptance flows for accepting or replacing an offered skill.
+  - It owns pending skill listing, pending skill debug/frame-event inspection, the active acceptance flows for accepting or replacing an offered skill, and the pending-skill-only slot-replacement helper used by post-grant reward windows.
+  - The mission-NPC learn-skill path is still not tested end to end and should currently be treated as an untested PoC.
   - It should be treated as a separate runtime interaction surface for skill-offer UI flows, even when higher-level wrappers delegate to it through `Dialog`.
 
 #### Inventory and Trade Systems

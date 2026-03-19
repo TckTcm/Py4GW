@@ -66,7 +66,7 @@ UI and runtime-facing systems:
 - `Overlay`: singleton overlay/drawlist composition layer.
 - `DXOverlay`: structured DirectX geometry/texture rendering façade over `Py2DRenderer`.
 - `ImGui`: higher-level themed UI toolkit over `PyImGui` and `ImGui_src`.
-- `SkillAccept`: pending skill-offer inspection plus accept/replace execution and related debug/frame-event helpers.
+- `SkillAccept`: pending skill-offer inspection, accept/replace execution, pending-skill-only slot replacement for post-grant reward windows, and related debug/frame-event helpers. The mission-NPC learn-skill path is known non-functional in runtime testing as of 2026-03-18 and should currently be treated as an incomplete RE target rather than a working automation path.
 
 Contextual systems:
 - `Context`: typed native context gateway over `native_src`.
