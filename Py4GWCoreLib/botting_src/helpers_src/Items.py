@@ -193,6 +193,105 @@ class _Items:
     def equip(self, model_id: int):
         return (yield from self._equip(model_id))
 
+    def _equip_inventory_bag(self, model_id: int, target_bag: int, timeout_ms: int = 2500):
+        from ...GlobalCache import GLOBAL_CACHE
+        from ...Routines import Routines
+        from ...enums import Bags
+        import Py4GW
+
+        def _yield_from_ui_helper(public_name: str, private_name: str, *args):
+            ui_helper = self.parent.helpers.UI
+            private_helper = getattr(ui_helper, private_name, None)
+            if callable(private_helper):
+                yield from private_helper(*args)
+                return
+
+            public_helper = getattr(ui_helper, public_name, None)
+            if callable(public_helper):
+                result = public_helper(*args)
+                if result is not None:
+                    yield from result
+                return
+
+            raise TypeError(f"UI helper is missing callable '{private_name}'/'{public_name}'")
+
+        def _bag_is_populated() -> bool:
+            target_container_item = GLOBAL_CACHE.Inventory.GetBagContainerItem(target_bag)
+            target_bag_size = GLOBAL_CACHE.Inventory.GetBagSize(target_bag)
+            return target_container_item != 0 or target_bag_size > 0
+
+        if _bag_is_populated():
+            return True
+
+        item_id = GLOBAL_CACHE.Inventory.GetFirstModelID(model_id)
+        if not item_id:
+            ConsoleLog(
+                "EquipInventoryBag",
+                f"Item model {model_id} not found in inventory.",
+                Py4GW.Console.MessageType.Error,
+            )
+            self._Events.on_unmanaged_fail()
+            return False
+
+        GLOBAL_CACHE.Inventory.UseItem(item_id)
+
+        poll_interval_ms = 125
+        native_attempt_timeout_ms = min(timeout_ms, 250)
+        elapsed_ms = 0
+        while elapsed_ms <= native_attempt_timeout_ms:
+            if _bag_is_populated():
+                return True
+            if elapsed_ms >= native_attempt_timeout_ms:
+                break
+            yield from Routines.Yield.wait(poll_interval_ms)
+            elapsed_ms += poll_interval_ms
+
+        if GLOBAL_CACHE.Inventory.MoveModelToBagSlot(model_id, Bags.Backpack, 0):
+            ConsoleLog(
+                "EquipInventoryBag",
+                f"Native UseItem did not populate bag {target_bag}; trying backpack slot double-click fallback for model {model_id}.",
+                Py4GW.Console.MessageType.Warning,
+                log=False,
+            )
+            yield from Routines.Yield.wait(250)
+            yield from _yield_from_ui_helper("open_all_bags", "_open_all_bags")
+            yield from Routines.Yield.wait(125)
+            yield from _yield_from_ui_helper("bag_item_double_click", "_bag_item_double_click", Bags.Backpack, 0)
+            if _bag_is_populated():
+                return True
+        else:
+            ConsoleLog(
+                "EquipInventoryBag",
+                f"Fallback move to backpack slot 0 failed for model {model_id}.",
+                Py4GW.Console.MessageType.Warning,
+                log=False,
+            )
+
+        elapsed_ms = 0
+        while elapsed_ms <= timeout_ms:
+            if _bag_is_populated():
+                return True
+            if elapsed_ms >= timeout_ms:
+                break
+            yield from Routines.Yield.wait(poll_interval_ms)
+            elapsed_ms += poll_interval_ms
+
+        ConsoleLog(
+            "EquipInventoryBag",
+            (
+                f"Failed to equip model {model_id} item {item_id} into bag {target_bag} within {timeout_ms}ms. "
+                f"container_item={GLOBAL_CACHE.Inventory.GetBagContainerItem(target_bag)} "
+                f"size={GLOBAL_CACHE.Inventory.GetBagSize(target_bag)}."
+            ),
+            Py4GW.Console.MessageType.Error,
+        )
+        self._Events.on_unmanaged_fail()
+        return False
+
+    @_yield_step(label="EquipInventoryBag", counter_key="EQUIP_INVENTORY_BAG")
+    def equip_inventory_bag(self, model_id: int, target_bag: int, timeout_ms: int = 2500):
+        return (yield from self._equip_inventory_bag(model_id, target_bag, timeout_ms))
+
     def _equip_on_hero(self, hero_type, model_id: int):
         from ...Routines import Routines
         from ...GlobalCache import GLOBAL_CACHE

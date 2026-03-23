@@ -133,10 +133,10 @@ class _UI:
             ConsoleLog("UI Helper", f"Frame does not exist for bag {bag_id} slot {slot}.", Console.MessageType.Error)
             self._Events.on_unmanaged_fail()
             return
-        
-        UIManager.TestMouseAction(frame_id=frame_id, current_state=8, wparam_value=0, lparam_value=0)
-        yield from Routines.Yield.wait(125)
-        UIManager.TestMouseAction(frame_id=frame_id, current_state=4, wparam_value=0, lparam_value=0)
+
+        UIManager.TestMouseAction(frame_id=frame_id, current_state=9, wparam_value=0, lparam_value=0)
+        yield from Routines.Yield.wait(60)
+        UIManager.TestMouseClickAction(frame_id=frame_id, current_state=9, wparam_value=0, lparam_value=0)
         yield from Routines.Yield.wait(125)
     
     @_yield_step(label="CancelSkillRewardWindow", counter_key="CANCEL_SKILL_REWARD_WINDOW")
