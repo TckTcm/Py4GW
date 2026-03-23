@@ -261,28 +261,34 @@ class _FakeUIHelper:
         self.bag_item_double_click_calls = []
         self._on_double_click = on_double_click or (lambda _bag_id, _slot: None)
 
-    def open_all_bags(self):
+    def iter_open_all_bags(self):
         self.open_all_bags_calls += 1
         yield None
 
-    def bag_item_double_click(self, bag_id: int, slot: int):
+    def open_all_bags(self):
+        return None
+
+    def iter_bag_item_double_click(self, bag_id: int, slot: int):
         self.bag_item_double_click_calls.append((bag_id, slot))
         self._on_double_click(bag_id, slot)
         yield None
+
+    def bag_item_double_click(self, bag_id: int, slot: int):
+        return None
 
 
 class _DecoratedStyleUIHelper(_FakeUIHelper):
     def open_all_bags(self):
         return None
 
-    def _open_all_bags(self):
+    def iter_open_all_bags(self):
         self.open_all_bags_calls += 1
         yield None
 
     def bag_item_double_click(self, _bag_id: int, _slot: int):
         return None
 
-    def _bag_item_double_click(self, bag_id: int, slot: int):
+    def iter_bag_item_double_click(self, bag_id: int, slot: int):
         self.bag_item_double_click_calls.append((bag_id, slot))
         self._on_double_click(bag_id, slot)
         yield None
@@ -438,7 +444,7 @@ class ItemsBagEquipHelperTests(unittest.TestCase):
         self.assertEqual([(_FakeBagsEnum.Backpack, 0)], ui_helper.bag_item_double_click_calls)
         self.assertEqual(0, self.events.unmanaged_failures)
 
-    def test_equip_inventory_bag_fallback_uses_private_ui_generators_when_public_wrappers_return_none(self):
+    def test_equip_inventory_bag_fallback_uses_explicit_ui_generator_api_when_public_wrappers_return_none(self):
         inventory = _FallbackTriggeredInventory(item_id=5005)
         ui_helper = _DecoratedStyleUIHelper(on_double_click=lambda _bag_id, _slot: setattr(inventory, "_equipped", True))
         self.items_helper = self.items_module._Items(_FakeBottingParent(self.events, _FakeBotRoot(ui_helper)))
@@ -481,8 +487,8 @@ class UIBagDoubleClickHelperTests(unittest.TestCase):
         _FakeUIManagerAPI.reset()
         self.ui_helper = self.ui_module._UI(_FakeBottingParent(_FakeEvents()))
 
-    def test_bag_item_double_click_uses_frame_mouse_double_click_path(self):
-        _drain(self.ui_helper._bag_item_double_click(1, 0))
+    def test_iter_bag_item_double_click_uses_frame_mouse_double_click_path(self):
+        _drain(self.ui_helper.iter_bag_item_double_click(1, 0))
 
         self.assertEqual(
             [(_FakeUIManagerAPI.child_frame_id, 9, 0, 0)],

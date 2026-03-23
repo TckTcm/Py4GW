@@ -199,22 +199,6 @@ class _Items:
         from ...enums import Bags
         import Py4GW
 
-        def _yield_from_ui_helper(public_name: str, private_name: str, *args):
-            ui_helper = self.parent.helpers.UI
-            private_helper = getattr(ui_helper, private_name, None)
-            if callable(private_helper):
-                yield from private_helper(*args)
-                return
-
-            public_helper = getattr(ui_helper, public_name, None)
-            if callable(public_helper):
-                result = public_helper(*args)
-                if result is not None:
-                    yield from result
-                return
-
-            raise TypeError(f"UI helper is missing callable '{private_name}'/'{public_name}'")
-
         def _bag_is_populated() -> bool:
             target_container_item = GLOBAL_CACHE.Inventory.GetBagContainerItem(target_bag)
             target_bag_size = GLOBAL_CACHE.Inventory.GetBagSize(target_bag)
@@ -254,9 +238,9 @@ class _Items:
                 log=False,
             )
             yield from Routines.Yield.wait(250)
-            yield from _yield_from_ui_helper("open_all_bags", "_open_all_bags")
+            yield from self.parent.helpers.UI.iter_open_all_bags()
             yield from Routines.Yield.wait(125)
-            yield from _yield_from_ui_helper("bag_item_double_click", "_bag_item_double_click", Bags.Backpack, 0)
+            yield from self.parent.helpers.UI.iter_bag_item_double_click(Bags.Backpack, 0)
             if _bag_is_populated():
                 return True
         else:
