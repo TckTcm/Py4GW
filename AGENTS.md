@@ -69,8 +69,9 @@ For every edited Python file:
 3. Confirm main loop uses `bot.Update()` and `bot.UI.draw_window(...)`.
 
 ## Placement Rules
-- Event bots: `Widgets/Automation/Bots/Events/`
+- Event bots: keep in the established event folder that matches the script category, typically `Widgets/Automation/Bots/Events/` or `Widgets/Automation/Bots/Farmers/Events/`
 - Farmers/Levelers/Vanquish: keep in their existing category folders.
+- Multibox tools: `Widgets/Automation/Multiboxing/`
 - Config outputs: `Widgets/Config/`
 - Persistent data: `Widgets/Data/`
 - Do not place production bots under `Examples/`.
@@ -79,3 +80,6 @@ For every edited Python file:
 - Never revert unrelated user changes.
 - Keep edits minimal and scoped to the request.
 - Prefer consistency with the reference priority over personal style choices.
+- Before asserting that a revert, restore, removal, or rename succeeded, verify the current file state directly from disk and/or git state in the same turn.
+- If a file is untracked or not present in git history, verify against the live file on disk rather than assuming git can confirm it.
+- Do not rely on memory for revert status; re-check the actual file contents or `git status`/`git diff` output before reporting completion.
