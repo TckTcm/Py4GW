@@ -1,7 +1,7 @@
 # Native GW Window Creation Investigation
 
 ## Purpose
-This note captures the current verified model for Guild Wars native UI window creation in the Python/C++ stack, separates it from the overlay/ImGui helper layer, and seeds the next REVA/Ghidra passes with a reusable function catalog instead of rediscovering the same targets each time.
+This note captures the current verified model for Guild Wars native UI window creation in the Python/C++ stack, separates it from the overlay/ImGui helper layer, and seeds the next `ghidra_mcp` passes with a reusable function catalog instead of rediscovering the same targets each time.
 
 This phase assumes:
 
@@ -187,7 +187,7 @@ Do not currently target:
 - skipping required child/leaf initialization
 - fake shell creation that omits required content-init helpers during first build
 
-## Next REVA/Ghidra Passes
+## Next `ghidra_mcp` Passes
 Keep batches small.
 
 ### Pass 1: Reconcile existing labeled functions against runtime-usable entries
