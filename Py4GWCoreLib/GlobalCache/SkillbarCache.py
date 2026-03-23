@@ -19,7 +19,11 @@ class SkillbarCache:
         return self._skillbar_instance.GetSkill(slot)
     
     def GetSkillIDBySlot(self, slot):
-        return self._skillbar_instance.GetSkill(slot).id.id
+        try:
+            skill = self._skillbar_instance.GetSkill(slot)
+            return int(getattr(getattr(skill, "id", None), "id", 0) or 0)
+        except Exception:
+            return 0
     
     def GetSkillbar(self):
         skill_ids = []
