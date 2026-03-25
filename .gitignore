@@ -216,3 +216,5 @@ docs/*.md
 BOT_REFERENCE.md
 Py4GW.dll
 *.sqlite3*
+Py4GW_injection_log*
+*.ini
