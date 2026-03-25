@@ -37,15 +37,10 @@ except Exception:
         PendingSkillDebugEvent = Any
         PendingSkillFrameEvent = Any
 
-MAX_DIALOG_ID = 0x39
-
 try:
     import PyDialog
-except Exception as exc:  # pragma: no cover - runtime environment specific
+except Exception:  # pragma: no cover - runtime environment specific
     PyDialog = None
-    _PYDIALOG_IMPORT_ERROR = exc
-else:
-    _PYDIALOG_IMPORT_ERROR = None
 
 
 def _get_dialog_catalog_widget():
@@ -498,27 +493,19 @@ class DialogCallbackJournalEntry:
 class DialogWidget:
     """High-level wrapper around the native PyDialog module."""
 
-    def __init__(self) -> None:
-        self._initialized = False
-
     def initialize(self) -> bool:
         if PyDialog is None:
             return False
         try:
             PyDialog.PyDialog.initialize()
-            self._initialized = True
             return True
         except Exception:
-            self._initialized = False
             return False
 
     def terminate(self) -> None:
         if PyDialog is None:
             return
-        try:
-            PyDialog.PyDialog.terminate()
-        finally:
-            self._initialized = False
+        PyDialog.PyDialog.terminate()
 
     def get_active_dialog(self) -> Optional[ActiveDialogInfo]:
         if PyDialog is None:

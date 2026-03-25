@@ -44,6 +44,8 @@ If references conflict, follow the higher-priority file.
 - Put constants at module top.
 - Keep functions focused and deterministic.
 - Use Py4GW wrappers (`Routines.Yield.*`, `Player`, `Agent`, `Map`, `Inventory`) rather than ad-hoc low-level logic.
+- Keep `Py4GWCoreLib` additions aligned with the responsibility boundaries used by the existing `.py` files under `Py4GWCoreLib/`; do not move widget-scale workflow/state machines into core library modules.
+- Keep search, target validation, post-send verification, and status/UX policy in widget, bot, or service-layer code unless the user explicitly asks for a core API.
 - Prefer `Player.SendChatCommand(...)` (or `Routines.Yield.Player.SendChatCommand(...)`) for slash commands.
 - Add timeout/deadlock guards for polling loops.
 
