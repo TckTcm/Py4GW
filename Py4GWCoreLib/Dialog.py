@@ -16,7 +16,7 @@ except Exception:
     except Exception:
         _get_dialog_turn_pipeline = None
 
-MAX_DIALOG_ID = 0x39 # TODO: wtf is this for????
+MAX_DIALOG_ID = 0x39
 
 try:
     import PyDialog
@@ -1568,4 +1568,3 @@ def get_dialog_diagnostics(
         sync=sync,
         max_issues=max_issues,
     )
-
