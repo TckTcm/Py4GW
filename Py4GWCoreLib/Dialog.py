@@ -16,31 +16,15 @@ except Exception:
     except Exception:
         _get_dialog_turn_pipeline = None
 
-try:
-    from .SkillAccept import (
-        PendingSkillDebugEvent,
-        PendingSkillFrameEvent,
-        PendingSkillInfo,
-        get_skill_accept_widget as _get_skill_accept_widget,
-    )
-except Exception:
-    try:
-        from SkillAccept import (  # type: ignore
-            PendingSkillDebugEvent,
-            PendingSkillFrameEvent,
-            PendingSkillInfo,
-            get_skill_accept_widget as _get_skill_accept_widget,
-        )
-    except Exception:
-        _get_skill_accept_widget = None
-        PendingSkillInfo = Any
-        PendingSkillDebugEvent = Any
-        PendingSkillFrameEvent = Any
+MAX_DIALOG_ID = 0x39 # TODO: wtf is this for????
 
 try:
     import PyDialog
-except Exception:  # pragma: no cover - runtime environment specific
+except Exception as exc:  # pragma: no cover - runtime environment specific
     PyDialog = None
+    _PYDIALOG_IMPORT_ERROR = exc
+else:
+    _PYDIALOG_IMPORT_ERROR = None
 
 
 def _get_dialog_catalog_widget():
@@ -493,19 +477,27 @@ class DialogCallbackJournalEntry:
 class DialogWidget:
     """High-level wrapper around the native PyDialog module."""
 
+    def __init__(self) -> None:
+        self._initialized = False
+
     def initialize(self) -> bool:
         if PyDialog is None:
             return False
         try:
             PyDialog.PyDialog.initialize()
+            self._initialized = True
             return True
         except Exception:
+            self._initialized = False
             return False
 
     def terminate(self) -> None:
         if PyDialog is None:
             return
-        PyDialog.PyDialog.terminate()
+        try:
+            PyDialog.PyDialog.terminate()
+        finally:
+            self._initialized = False
 
     def get_active_dialog(self) -> Optional[ActiveDialogInfo]:
         if PyDialog is None:
@@ -596,21 +588,6 @@ class DialogWidget:
             return []
         native_list = PyDialog.PyDialog.enumerate_available_dialogs()
         return [DialogInfo(item) for item in native_list]
-
-    def get_pending_skills(self, agent_id: int = 0) -> List[PendingSkillInfo]:
-        if _get_skill_accept_widget is None:
-            return []
-        return _get_skill_accept_widget().get_pending_skills(agent_id)
-
-    def get_pending_skill_debug_event(self) -> Optional[PendingSkillDebugEvent]:
-        if _get_skill_accept_widget is None:
-            return None
-        return _get_skill_accept_widget().get_pending_skill_debug_event()
-
-    def get_pending_skill_frame_events(self) -> List[PendingSkillFrameEvent]:
-        if _get_skill_accept_widget is None:
-            return []
-        return _get_skill_accept_widget().get_pending_skill_frame_events()
 
     def get_dialog_event_logs(self) -> List:
         if PyDialog is None:
@@ -1179,32 +1156,6 @@ class DialogWidget:
         )
         return _analyze_dialog_turns(turns, max_issues=max_issues)
 
-    def accept_offered_skill(self, skill_id: int) -> bool:
-        if _get_skill_accept_widget is None:
-            return False
-        return bool(_get_skill_accept_widget().accept_offered_skill(skill_id))
-
-    def accept_offered_skill_replace(self, skill_id: int, slot_index: int, copy_id: Optional[int] = None) -> bool:
-        if _get_skill_accept_widget is None:
-            return False
-        return bool(_get_skill_accept_widget().accept_offered_skill_replace(skill_id, slot_index, copy_id))
-
-    def apply_pending_skill_replace(
-        self,
-        skill_id: int,
-        slot_index: int,
-        copy_id: Optional[int] = None,
-        agent_id: int = 0,
-    ) -> bool:
-        if _get_skill_accept_widget is None:
-            return False
-        return bool(
-            _get_skill_accept_widget().apply_pending_skill_replace(
-                skill_id, slot_index, copy_id, agent_id
-            )
-        )
-
-
 _dialog_widget_instance: Optional[DialogWidget] = None
 
 
@@ -1245,18 +1196,6 @@ def is_dialog_displayed(dialog_id: int) -> bool:
 
 def get_dialog_text_decode_status() -> List[DialogTextDecodedInfo]:
     return get_dialog_widget().get_dialog_text_decode_status()
-
-
-def get_pending_skills(agent_id: int = 0) -> List[PendingSkillInfo]:
-    return get_dialog_widget().get_pending_skills(agent_id)
-
-
-def get_pending_skill_debug_event() -> Optional[PendingSkillDebugEvent]:
-    return get_dialog_widget().get_pending_skill_debug_event()
-
-
-def get_pending_skill_frame_events() -> List[PendingSkillFrameEvent]:
-    return get_dialog_widget().get_pending_skill_frame_events()
 
 
 def get_dialog_event_logs() -> List:
@@ -1630,19 +1569,3 @@ def get_dialog_diagnostics(
         max_issues=max_issues,
     )
 
-
-def accept_offered_skill(skill_id: int) -> bool:
-    return get_dialog_widget().accept_offered_skill(skill_id)
-
-
-def accept_offered_skill_replace(skill_id: int, slot_index: int, copy_id: Optional[int] = None) -> bool:
-    return get_dialog_widget().accept_offered_skill_replace(skill_id, slot_index, copy_id)
-
-
-def apply_pending_skill_replace(
-    skill_id: int,
-    slot_index: int,
-    copy_id: Optional[int] = None,
-    agent_id: int = 0,
-) -> bool:
-    return get_dialog_widget().apply_pending_skill_replace(skill_id, slot_index, copy_id, agent_id)
