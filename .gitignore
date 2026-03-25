@@ -207,6 +207,7 @@ cython_debug/
 
 # Ignore Visual Studio Code settings folder
 .vscode/
+.worktrees/
 
 # macOS system files
 .DS_Store
