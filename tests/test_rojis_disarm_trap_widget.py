@@ -213,6 +213,8 @@ def _install_fake_modules():
 
     sys.modules["Py4GWCoreLib"] = package
     sys.modules["Py4GWCoreLib.Dialog"] = dialog_module
+    sys.modules["Py4GWCoreLib.SkillAccept"] = dialog_module
+    package.SkillAccept = dialog_module
     return dialog_module
 
 
