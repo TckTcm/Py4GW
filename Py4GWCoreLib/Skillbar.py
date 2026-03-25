@@ -115,9 +115,12 @@ class SkillBar:
             skill_slot (int): The slot number of the skill to retrieve (1-8).
         Returns: dict: A dictionary containing skill details retrieved by slot.
         """
-        skillbar_instance = PySkillbar.Skillbar()
-        skill = skillbar_instance.GetSkill(skill_slot)
-        return skill.id.id
+        try:
+            skillbar_instance = PySkillbar.Skillbar()
+            skill = skillbar_instance.GetSkill(skill_slot)
+            return int(getattr(getattr(skill, "id", None), "id", 0) or 0)
+        except Exception:
+            return 0
 
     #get the slot by skillid
     @staticmethod
