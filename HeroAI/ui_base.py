@@ -3,7 +3,7 @@ import math
 import HeroAI.globals as hero_globals
 import PyImGui
 
-from Py4GWCoreLib import GLOBAL_CACHE, Agent, IconsFontAwesome5, ImGui, Map, Range, WindowFrames, Color, ColorPalette, ConsoleLog, SharedCommandType
+from Py4GWCoreLib import GLOBAL_CACHE, Agent, IconsFontAwesome5, ImGui, Map, Overlay, Range, Utils, WindowFrames, Color, ColorPalette, ConsoleLog, SharedCommandType
 from Py4GWCoreLib import Key, Keystroke, ThrottledTimer, UIManager
 from Py4GWCoreLib.GlobalCache.SharedMemory import AccountStruct, HeroAIOptionStruct
 from Py4GWCoreLib.IniManager import IniManager
@@ -11,7 +11,7 @@ from Py4GWCoreLib.Player import Player
 
 from HeroAI.cache_data import CacheData
 from HeroAI.constants import NUMBER_OF_SKILLS
-from HeroAI.utils import IsHeroFlagged
+from HeroAI.utils import DrawFlagAll, DrawHeroFlag, IsHeroFlagged
 from HeroAI.windows import HeroAI_FloatingWindows, HeroAI_Windows
 from .constants import MAX_NUM_PLAYERS, NUMBER_OF_SKILLS
 
@@ -48,6 +48,11 @@ class HeroAI_BaseUI:
     _build_match_rows: list[tuple[int, str, int, int, str, str, str]] = []
     _build_match_signature_cache: dict[int, tuple[tuple[int, int, tuple[int, ...]], tuple[int, str, int, int, str, str, str]]] = {}
     _build_registry = None
+    _supported_build_selected_key = ""
+    _supported_build_selected_skill_id = 0
+    _supported_build_last_detail_key = ""
+    _supported_builds_cache: dict[str, dict[str, object]] = {}
+    _flag_map_signature = None
     _profession_palette_names = {
         1: "GW_Warrior",
         2: "GW_Ranger",
@@ -89,6 +94,182 @@ class HeroAI_BaseUI:
         "Alcohol": ButtonColor(button_color=Color(58, 41, 50, 255), hovered_color=Color(169, 145, 111, 255), active_color=Color(173, 173, 156, 255), texture_path="Textures\\Consumables\\Trimmed\\Dwarven_Ale.png"),
         "Blank": ButtonColor(button_color=Color(0, 0, 0, 0), hovered_color=Color(0, 0, 0, 0), active_color=Color(0, 0, 0, 0)),
     }
+
+    @staticmethod
+    def _reset_flag_capture_state() -> None:
+        HeroAI_BaseUI.ClearFlags = False
+        HeroAI_BaseUI.one_time_set_flag = False
+        HeroAI_BaseUI.capture_hero_index = -1
+        HeroAI_BaseUI.capture_hero_flag = False
+        HeroAI_BaseUI.capture_flag_all = False
+        hero_globals.capture_mouse_timer.Stop()
+
+    @staticmethod
+    def _get_flag_option_pairs() -> tuple[list[HeroAIOptionStruct | None], list[AccountStruct | None], HeroAIOptionStruct | None]:
+        active_account_option_pairs: list[tuple[AccountStruct, HeroAIOptionStruct]] = GLOBAL_CACHE.ShMem.GetAllActiveAccountHeroAIPairs(sort_results=False)
+        options_by_party: list[HeroAIOptionStruct | None] = [None] * MAX_NUM_PLAYERS
+        accounts_by_party: list[AccountStruct | None] = [None] * MAX_NUM_PLAYERS
+
+        for account, options in active_account_option_pairs:
+            party_index = int(account.AgentPartyData.PartyPosition)
+            if 0 <= party_index < MAX_NUM_PLAYERS:
+                accounts_by_party[party_index] = account
+                options_by_party[party_index] = options
+
+        return options_by_party, accounts_by_party, options_by_party[0]
+
+    @staticmethod
+    def _clear_all_flags(options_by_party: list[HeroAIOptionStruct | None] | None = None) -> None:
+        party_heroes = GLOBAL_CACHE.Party.Heroes
+        if options_by_party is None:
+            options_by_party, _, _ = HeroAI_BaseUI._get_flag_option_pairs()
+
+        for i in range(MAX_NUM_PLAYERS):
+            options = options_by_party[i]
+            if options is not None:
+                options.IsFlagged = False
+                options.FlagPos.x = 0.0
+                options.FlagPos.y = 0.0
+                options.AllFlag.x = 0.0
+                options.AllFlag.y = 0.0
+                options.FlagFacingAngle = 0.0
+
+            party_heroes.UnflagHero(i)
+
+        party_heroes.UnflagAllHeroes()
+        HeroAI_BaseUI._reset_flag_capture_state()
+
+    @staticmethod
+    def _process_flagging_runtime(cached_data: CacheData) -> None:
+        if not Map.IsMapReady():
+            return
+
+        is_leader = Player.GetAgentID() == GLOBAL_CACHE.Party.GetPartyLeaderID()
+        if not is_leader:
+            HeroAI_BaseUI._reset_flag_capture_state()
+            HeroAI_BaseUI._flag_map_signature = None
+            return
+
+        options_by_party, accounts_by_party, leader_options = HeroAI_BaseUI._get_flag_option_pairs()
+
+        if not Map.IsExplorable():
+            if HeroAI_BaseUI._flag_map_signature is not None:
+                HeroAI_BaseUI._clear_all_flags(options_by_party)
+            HeroAI_BaseUI._flag_map_signature = None
+            hero_globals.show_flagging_window = False
+            return
+
+        map_signature = (
+            int(Map.GetMapID()),
+            int(Map.GetRegion()[0]),
+            int(Map.GetDistrict()),
+            int(Map.GetLanguage()[0]),
+            int(GLOBAL_CACHE.Party.GetPartyID()),
+        )
+        if HeroAI_BaseUI._flag_map_signature is not None and HeroAI_BaseUI._flag_map_signature != map_signature:
+            HeroAI_BaseUI._clear_all_flags(options_by_party)
+            options_by_party, accounts_by_party, leader_options = HeroAI_BaseUI._get_flag_option_pairs()
+        HeroAI_BaseUI._flag_map_signature = map_signature
+
+        if HeroAI_BaseUI.capture_hero_flag:
+            x, y, _ = Overlay().GetMouseWorldPos()
+            if HeroAI_BaseUI.capture_flag_all:
+                DrawFlagAll(x, y)
+            else:
+                DrawHeroFlag(x, y)
+
+            mouse_clicked = PyImGui.is_mouse_clicked(0)
+            if mouse_clicked and HeroAI_BaseUI.one_time_set_flag:
+                HeroAI_BaseUI.one_time_set_flag = False
+                return
+
+            if mouse_clicked:
+                capture_index = HeroAI_BaseUI.capture_hero_index
+                hero_count = GLOBAL_CACHE.Party.GetHeroCount()
+
+                if 0 < capture_index <= hero_count and not HeroAI_BaseUI.capture_flag_all:
+                    agent_id = GLOBAL_CACHE.Party.Heroes.GetHeroAgentIDByPartyPosition(capture_index)
+                    GLOBAL_CACHE.Party.Heroes.FlagHero(agent_id, x, y)
+                    HeroAI_BaseUI.one_time_set_flag = True
+                else:
+                    if capture_index == 0:
+                        hero_ai_index = 0
+                        GLOBAL_CACHE.Party.Heroes.FlagAllHeroes(x, y)
+                    else:
+                        hero_ai_index = capture_index - hero_count
+
+                    options = options_by_party[hero_ai_index] if 0 <= hero_ai_index < MAX_NUM_PLAYERS else None
+                    if options is not None:
+                        if capture_index == 0:
+                            options.AllFlag.x = x
+                            options.AllFlag.y = y
+                        else:
+                            options.FlagPos.x = x
+                            options.FlagPos.y = y
+                        options.IsFlagged = True
+                        options.FlagFacingAngle = Agent.GetRotationAngle(GLOBAL_CACHE.Party.GetPartyLeaderID())
+                    HeroAI_BaseUI.one_time_set_flag = True
+
+                HeroAI_BaseUI.capture_flag_all = False
+                HeroAI_BaseUI.capture_hero_flag = False
+                HeroAI_BaseUI.one_time_set_flag = False
+                hero_globals.capture_mouse_timer.Stop()
+
+        if leader_options and leader_options.IsFlagged:
+            DrawFlagAll(leader_options.AllFlag.x, leader_options.AllFlag.y)
+
+        for i in range(1, MAX_NUM_PLAYERS):
+            options = options_by_party[i]
+            account = accounts_by_party[i]
+            if options is None or not options.IsFlagged or account is None:
+                continue
+            DrawHeroFlag(options.FlagPos.x, options.FlagPos.y)
+
+        if hero_globals.show_broadcast_follow_positions or hero_globals.show_broadcast_follow_threshold_rings:
+            segments = 24
+            Overlay().BeginDraw()
+            for i in range(1, MAX_NUM_PLAYERS):
+                options = options_by_party[i]
+                account = accounts_by_party[i]
+                if options is None or account is None or not account.IsSlotActive:
+                    continue
+
+                fx = float(options.FollowPos.x)
+                fy = float(options.FollowPos.y)
+                if abs(fx) < 0.001 and abs(fy) < 0.001:
+                    continue
+
+                fz = Overlay().FindZ(fx, fy, 0)
+                if hero_globals.show_broadcast_follow_positions:
+                    Overlay().DrawPoly3D(
+                        fx, fy, fz,
+                        radius=Range.Touch.value / 3,
+                        color=Utils.RGBToColor(0, 255, 255, 140),
+                        numsegments=segments,
+                        thickness=2.0,
+                    )
+                    Overlay().DrawText3D(
+                        fx, fy, fz - 110,
+                        f"F{i}",
+                        color=Utils.RGBToColor(0, 255, 255, 220),
+                        autoZ=False,
+                        centered=True,
+                        scale=1.8,
+                    )
+                if hero_globals.show_broadcast_follow_threshold_rings:
+                    thr = max(0.0, float(getattr(options, "FollowMoveThreshold", 0.0)))
+                    if thr > 0.0:
+                        Overlay().DrawPoly3D(
+                            fx, fy, fz,
+                            radius=thr,
+                            color=Utils.RGBToColor(255, 215, 0, 110),
+                            numsegments=max(24, segments),
+                            thickness=2.0,
+                        )
+            Overlay().EndDraw()
+
+        if HeroAI_BaseUI.ClearFlags:
+            HeroAI_BaseUI._clear_all_flags(options_by_party)
 
     @staticmethod
     def DrawPanelButtons(identifier: str, source_game_option: HeroAIOptionStruct, set_global: bool = False):
@@ -424,18 +605,31 @@ class HeroAI_BaseUI:
         secondary_label = HeroAI_BaseUI._profession_label(secondary_value)
         profession_label = f"{primary_label}{('/' + secondary_label) if secondary_label else ''}"
 
+        primary_prof = Profession(primary_value)
+        secondary_prof = Profession(secondary_value)
+        best_score = -1
+        for build in registry._iter_matchable_builds(match_only=True):
+            score = build.ScoreMatch(
+                current_primary=primary_prof,
+                current_secondary=secondary_prof,
+                current_skills=list(skill_ids),
+            )
+            if score > best_score:
+                best_score = score
+
         resolved_build = registry.ResolveBuild(
-            current_primary=Profession(primary_value),
-            current_secondary=Profession(secondary_value),
+            current_primary=primary_prof,
+            current_secondary=secondary_prof,
             current_skills=list(skill_ids),
             fallback_name=fallback_name,
         )
 
-        if resolved_build is not None:
+        if resolved_build is not None and best_score > 0 and not resolved_build.is_fallback_candidate:
             build_name = str(getattr(resolved_build, "build_name", "") or resolved_build.__class__.__name__)
+            source_label = "Matched"
         else:
             build_name = fallback_name
-        source_label = "Fallback" if (resolved_build is None or resolved_build.is_fallback_candidate) else "Matched"
+            source_label = "Fallback"
         return (
             int(account.AgentPartyData.PartyPosition),
             str(account.AgentData.CharacterName),
@@ -528,6 +722,15 @@ class HeroAI_BaseUI:
             secondary_prof = Profession(secondary_value)
             skill_ids = [int(skill.Id) for skill in account.AgentData.Skillbar.Skills if int(skill.Id) != 0]
             fallback_name = "HeroAI"
+            best_score = -1
+            for build in registry._iter_matchable_builds(match_only=True):
+                score = build.ScoreMatch(
+                    current_primary=primary_prof,
+                    current_secondary=secondary_prof,
+                    current_skills=skill_ids,
+                )
+                if score > best_score:
+                    best_score = score
 
             resolved_build = registry.ResolveBuild(
                 current_primary=primary_prof,
@@ -537,8 +740,12 @@ class HeroAI_BaseUI:
             )
 
             resolved_class = resolved_build.__class__.__name__ if resolved_build is not None else "None"
-            resolved_name = str(getattr(resolved_build, "build_name", "") if resolved_build is not None else fallback_name)
-            resolved_source = "Fallback" if (resolved_build is None or resolved_build.is_fallback_candidate) else "Matched"
+            if resolved_build is not None and best_score > 0 and not resolved_build.is_fallback_candidate:
+                resolved_name = str(getattr(resolved_build, "build_name", "") or resolved_class)
+                resolved_source = "Matched"
+            else:
+                resolved_name = fallback_name
+                resolved_source = "Fallback"
 
             ConsoleLog(
                 "HeroAI",
@@ -585,44 +792,345 @@ class HeroAI_BaseUI:
         ConsoleLog("HeroAI", "=== End Build Match Debug Dump ===")
 
     @staticmethod
+    def _get_supported_build_groups(registry) -> list[tuple[str, list[tuple[str, list[str]]]]]:
+        grouped_builds: dict[str, dict[str, list[str]]] = {}
+
+        for build in registry._iter_matchable_builds(match_only=True):
+            module_parts = build.__class__.__module__.split(".")
+            profession_group = module_parts[2] if len(module_parts) > 2 else "Other"
+            combo_group = module_parts[3] if len(module_parts) > 3 else "General"
+            build_name = str(getattr(build, "build_name", "") or build.__class__.__name__)
+
+            profession_entry = grouped_builds.setdefault(profession_group, {})
+            combo_entry = profession_entry.setdefault(combo_group, [])
+            if build_name not in combo_entry:
+                combo_entry.append(build_name)
+
+        supported_groups: list[tuple[str, list[tuple[str, list[str]]]]] = []
+        for profession_group in sorted(grouped_builds):
+            combo_groups: list[tuple[str, list[str]]] = []
+            for combo_group in sorted(grouped_builds[profession_group]):
+                combo_groups.append((combo_group, sorted(grouped_builds[profession_group][combo_group])))
+            supported_groups.append((profession_group, combo_groups))
+        return supported_groups
+
+    @staticmethod
+    def _draw_build_matches_tab() -> None:
+        if not HeroAI_BaseUI._build_match_rows:
+            PyImGui.text("No party accounts available.")
+            return
+
+        for party_pos, character_name, primary_value, secondary_value, profession_label, build_name, source_label in HeroAI_BaseUI._build_match_rows:
+            PyImGui.text(f"{party_pos + 1}. {character_name}")
+            if profession_label:
+                PyImGui.same_line(220, 0)
+                primary_prof = HeroAI_BaseUI._profession_label(primary_value)
+                secondary_prof = HeroAI_BaseUI._profession_label(secondary_value)
+                if secondary_prof:
+                    PyImGui.text_colored(primary_prof, HeroAI_BaseUI._profession_color(primary_value).to_tuple_normalized())
+                    PyImGui.same_line(0, 0)
+                    PyImGui.text("/")
+                    PyImGui.same_line(0, 0)
+                    PyImGui.text_colored(secondary_prof, HeroAI_BaseUI._profession_color(secondary_value).to_tuple_normalized())
+                else:
+                    PyImGui.text_colored(primary_prof, HeroAI_BaseUI._profession_color(primary_value).to_tuple_normalized())
+            build_color = ColorPalette.GetColor("dodger_blue") if source_label == "Matched" else ColorPalette.GetColor("gw_gold")
+            PyImGui.text("Build:")
+            PyImGui.same_line(220, 0)
+            PyImGui.text_colored(build_name, build_color.to_tuple_normalized())
+            PyImGui.same_line(0, 14)
+            status_color = ColorPalette.GetColor("dodger_blue") if source_label == "Matched" else ColorPalette.GetColor("gw_gold")
+            PyImGui.text_colored(source_label, status_color.to_tuple_normalized())
+            PyImGui.separator()
+
+    @staticmethod
+    def _build_browser_catalog(registry) -> list[dict[str, object]]:
+        grouped_builds: dict[str, dict[str, list[dict[str, object]]]] = {}
+        build_catalog: dict[str, dict[str, object]] = {}
+
+        for build in registry._iter_matchable_builds(match_only=True):
+            module_parts = build.__class__.__module__.split(".")
+            profession_group = module_parts[2] if len(module_parts) > 2 else "Other"
+            combo_group = module_parts[3] if len(module_parts) > 3 else "General"
+            build_name = str(getattr(build, "build_name", "") or build.__class__.__name__)
+            build_key = f"{build.__class__.__module__}.{build.__class__.__name__}"
+            required_skills = [int(skill_id) for skill_id in getattr(build, "required_skills", []) if int(skill_id) != 0]
+            optional_skills = [int(skill_id) for skill_id in getattr(build, "optional_skills", []) if int(skill_id) != 0]
+            supported_skills = [int(skill_id) for skill_id in build.GetSupportedSkills() if int(skill_id) != 0]
+
+            build_info = {
+                "key": build_key,
+                "name": build_name,
+                "class_name": build.__class__.__name__,
+                "template_code": str(getattr(build, "template_code", "") or ""),
+                "required_primary": int(getattr(build.required_primary, "value", 0)),
+                "required_secondary": int(getattr(build.required_secondary, "value", 0)),
+                "required_skills": required_skills,
+                "optional_skills": optional_skills,
+                "supported_skills": supported_skills,
+                "profession_group": profession_group,
+                "combo_group": combo_group,
+            }
+            build_catalog[build_key] = build_info
+
+            profession_entry = grouped_builds.setdefault(profession_group, {})
+            combo_entry = profession_entry.setdefault(combo_group, [])
+            combo_entry.append(build_info)
+
+        if not HeroAI_BaseUI._supported_build_selected_key and build_catalog:
+            HeroAI_BaseUI._supported_build_selected_key = next(iter(build_catalog.keys()))
+        elif HeroAI_BaseUI._supported_build_selected_key not in build_catalog:
+            HeroAI_BaseUI._supported_build_selected_key = next(iter(build_catalog.keys()), "")
+
+        HeroAI_BaseUI._supported_builds_cache = build_catalog
+
+        supported_groups: list[dict[str, object]] = []
+        for profession_group in sorted(grouped_builds):
+            combo_groups: list[dict[str, object]] = []
+            profession_count = 0
+            for combo_group in sorted(grouped_builds[profession_group]):
+                builds = sorted(grouped_builds[profession_group][combo_group], key=lambda item: str(item["name"]))
+                profession_count += len(builds)
+                combo_groups.append({
+                    "name": combo_group,
+                    "count": len(builds),
+                    "builds": builds,
+                })
+            supported_groups.append({
+                "name": profession_group,
+                "count": profession_count,
+                "combo_groups": combo_groups,
+            })
+        return supported_groups
+
+    @staticmethod
+    def _copy_build_template_to_clipboard(template_code: str) -> None:
+        if template_code:
+            PyImGui.set_clipboard_text(template_code)
+
+    @staticmethod
+    def _get_selected_supported_skill(skill_ids: list[int]) -> int:
+        normalized_skill_ids = [int(skill_id) for skill_id in skill_ids if int(skill_id) != 0]
+        if not normalized_skill_ids:
+            HeroAI_BaseUI._supported_build_selected_skill_id = 0
+            return 0
+        if HeroAI_BaseUI._supported_build_selected_skill_id not in normalized_skill_ids:
+            HeroAI_BaseUI._supported_build_selected_skill_id = normalized_skill_ids[0]
+        return HeroAI_BaseUI._supported_build_selected_skill_id
+
+    @staticmethod
+    def _draw_skill_info_card(skill_id: int, compact: bool = False, tooltip: bool = False) -> None:
+        if int(skill_id) == 0:
+            return
+
+        texture_path = GLOBAL_CACHE.Skill.ExtraData.GetTexturePath(skill_id)
+        skill_name = GLOBAL_CACHE.Skill.GetNameFromWiki(skill_id) or GLOBAL_CACHE.Skill.GetName(skill_id) or str(skill_id)
+        profession_value, profession_name = GLOBAL_CACHE.Skill.GetProfession(skill_id)
+        _skill_type_value, skill_type_name = GLOBAL_CACHE.Skill.GetType(skill_id)
+        energy_cost = int(GLOBAL_CACHE.Skill.Data.GetEnergyCost(skill_id))
+        adrenaline_cost = int(GLOBAL_CACHE.Skill.Data.GetAdrenaline(skill_id))
+        health_cost = int(GLOBAL_CACHE.Skill.Data.GetHealthCost(skill_id))
+        overcast_cost = int(GLOBAL_CACHE.Skill.Data.GetOvercast(skill_id))
+        activation_time = float(GLOBAL_CACHE.Skill.Data.GetActivation(skill_id))
+        aftercast_time = float(GLOBAL_CACHE.Skill.Data.GetAftercast(skill_id))
+        recharge_time = int(GLOBAL_CACHE.Skill.Data.GetRecharge(skill_id))
+        is_elite = bool(GLOBAL_CACHE.Skill.Flags.IsElite(skill_id))
+        campaign_name = GLOBAL_CACHE.Skill.GetCampaign(skill_id)[1]
+        concise_description = GLOBAL_CACHE.Skill.GetConciseDescription(skill_id) or GLOBAL_CACHE.Skill.GetDescription(skill_id) or ""
+
+        accent = HeroAI_BaseUI._profession_color(int(profession_value))
+        title_color = ColorPalette.GetColor("gw_gold") if is_elite else ColorPalette.GetColor("white")
+        icon_size = 56 if compact else 72
+        wrap_width = 360 if compact or tooltip else 520
+
+        PyImGui.begin_group()
+        ImGui.DrawTexture(texture_path, icon_size, icon_size)
+        PyImGui.same_line(0, 12)
+        PyImGui.begin_group()
+        ImGui.push_font("Bold", 16 if compact else 18)
+        PyImGui.text_colored(skill_name, title_color.to_tuple_normalized())
+        ImGui.pop_font()
+        PyImGui.text_colored(f"{profession_name} | {skill_type_name}", accent.to_tuple_normalized())
+        PyImGui.text_colored(campaign_name, ColorPalette.GetColor("gray").to_tuple_normalized())
+
+        meta_parts: list[str] = []
+        if health_cost > 0:
+            meta_parts.append(f"HP {health_cost}%")
+        if overcast_cost > 0:
+            meta_parts.append(f"OC {overcast_cost}")
+        if energy_cost > 0:
+            meta_parts.append(f"E {energy_cost}")
+        if adrenaline_cost > 0:
+            meta_parts.append(f"A {adrenaline_cost}")
+        if activation_time > 0:
+            meta_parts.append(f"Cast {activation_time:.2f}s")
+        if aftercast_time > 0 and not compact:
+            meta_parts.append(f"After {aftercast_time:.2f}s")
+        if recharge_time > 0:
+            meta_parts.append(f"Recharge {recharge_time}s")
+        if not meta_parts:
+            meta_parts.append(skill_type_name)
+        PyImGui.text(" | ".join(meta_parts))
+        PyImGui.push_text_wrap_pos(wrap_width)
+        PyImGui.text_wrapped(concise_description)
+        PyImGui.pop_text_wrap_pos()
+        PyImGui.end_group()
+        PyImGui.end_group()
+
+    @staticmethod
+    def _draw_skill_icon_grid(skill_ids: list[int], section_name: str) -> None:
+        PyImGui.text(f"{section_name} ({len(skill_ids)})")
+        if not skill_ids:
+            PyImGui.text_colored("None", ColorPalette.GetColor("gray").to_tuple_normalized())
+            return
+
+        cards_per_row = 8
+        for index, skill_id in enumerate(skill_ids):
+            is_selected = HeroAI_BaseUI._supported_build_selected_skill_id == int(skill_id)
+            if ImGui.image_toggle_button(f"{section_name}_{index}_{skill_id}", GLOBAL_CACHE.Skill.ExtraData.GetTexturePath(skill_id), is_selected, 42, 42):
+                HeroAI_BaseUI._supported_build_selected_skill_id = int(skill_id)
+
+            if PyImGui.is_item_hovered():
+                if PyImGui.begin_tooltip():
+                    HeroAI_BaseUI._draw_skill_info_card(int(skill_id), compact=True, tooltip=True)
+                    PyImGui.end_tooltip()
+
+            if (index + 1) % cards_per_row != 0 and index + 1 < len(skill_ids):
+                PyImGui.same_line(0, 8)
+
+    @staticmethod
+    def _draw_supported_build_details(selected_build: dict[str, object] | None) -> None:
+        if not selected_build:
+            PyImGui.text("Select a build from the tree to inspect its details.")
+            return
+
+        build_name = str(selected_build["name"])
+        build_key = str(selected_build["key"])
+        class_name = str(selected_build["class_name"])
+        template_code = str(selected_build["template_code"])
+        required_primary = int(selected_build["required_primary"])
+        required_secondary = int(selected_build["required_secondary"])
+        required_skills = list(selected_build["required_skills"])
+        optional_skills = list(selected_build["optional_skills"])
+        supported_skills = list(selected_build["supported_skills"])
+        all_detail_skills = list(dict.fromkeys([*required_skills, *optional_skills, *supported_skills]))
+
+        if HeroAI_BaseUI._supported_build_last_detail_key != build_key:
+            HeroAI_BaseUI._supported_build_last_detail_key = build_key
+            HeroAI_BaseUI._supported_build_selected_skill_id = int(all_detail_skills[0]) if all_detail_skills else 0
+
+        selected_skill_id = HeroAI_BaseUI._get_selected_supported_skill(all_detail_skills)
+
+        ImGui.push_font("Bold", 18)
+        PyImGui.text(build_name)
+        ImGui.pop_font()
+        PyImGui.text_colored(class_name, ColorPalette.GetColor("gray").to_tuple_normalized())
+        PyImGui.separator()
+
+        PyImGui.text("Professions")
+        primary_label = HeroAI_BaseUI._profession_label(required_primary) or "Any"
+        secondary_label = HeroAI_BaseUI._profession_label(required_secondary) or "Any"
+        PyImGui.text_colored(primary_label, HeroAI_BaseUI._profession_color(required_primary).to_tuple_normalized())
+        PyImGui.same_line(0, 8)
+        PyImGui.text("/")
+        PyImGui.same_line(0, 8)
+        PyImGui.text_colored(secondary_label, HeroAI_BaseUI._profession_color(required_secondary).to_tuple_normalized())
+        PyImGui.separator()
+
+        PyImGui.text("Template")
+        if template_code:
+            PyImGui.text_wrapped(template_code)
+            if PyImGui.button("Copy Template##copy_supported_build_template"):
+                HeroAI_BaseUI._copy_build_template_to_clipboard(template_code)
+        else:
+            PyImGui.text_colored("No template code.", ColorPalette.GetColor("gray").to_tuple_normalized())
+        PyImGui.separator()
+
+        HeroAI_BaseUI._draw_skill_icon_grid(required_skills, "Required Skills")
+        PyImGui.separator()
+        HeroAI_BaseUI._draw_skill_icon_grid(optional_skills, "Supported Extras")
+        PyImGui.separator()
+        HeroAI_BaseUI._draw_skill_icon_grid(supported_skills, "All Supported Skills")
+        PyImGui.separator()
+        PyImGui.text("Selected Skill")
+        if PyImGui.begin_child("SupportedBuildSelectedSkillPane", (0, 220), True, PyImGui.WindowFlags.NoFlag):
+            if selected_skill_id:
+                HeroAI_BaseUI._draw_skill_info_card(selected_skill_id, compact=False)
+            else:
+                PyImGui.text("Select a skill icon to inspect it here.")
+            PyImGui.end_child()
+
+    @staticmethod
+    def _draw_supported_builds_tab(registry) -> None:
+        supported_groups = HeroAI_BaseUI._build_browser_catalog(registry)
+        if not supported_groups:
+            PyImGui.text("No supported matchable builds discovered.")
+            return
+
+        PyImGui.text("Browse supported builds and inspect what the matcher can inherit from.")
+        PyImGui.separator()
+
+        avail_x, _avail_y = PyImGui.get_content_region_avail()
+        tree_width = min(320.0, max(250.0, avail_x * 0.34))
+        details_width = max(260.0, avail_x - tree_width - 16.0)
+
+        if PyImGui.begin_child("SupportedBuildTreePane", (tree_width, 0), True, PyImGui.WindowFlags.NoFlag):
+            for profession_group in supported_groups:
+                profession_name = str(profession_group["name"])
+                profession_count = int(profession_group["count"])
+                if not PyImGui.tree_node(f"{profession_name} ({profession_count})##supported_{profession_name}"):
+                    continue
+
+                for combo_group in profession_group["combo_groups"]:
+                    combo_name = str(combo_group["name"])
+                    combo_count = int(combo_group["count"])
+                    if not PyImGui.tree_node(f"{combo_name} ({combo_count})##supported_{profession_name}_{combo_name}"):
+                        continue
+
+                    for build_info in combo_group["builds"]:
+                        build_key = str(build_info["key"])
+                        build_name = str(build_info["name"])
+                        is_selected = HeroAI_BaseUI._supported_build_selected_key == build_key
+                        if ImGui.selectable(f"{build_name}##supported_build_{build_key}", is_selected, PyImGui.SelectableFlags.NoFlag, (0, 0)):
+                            HeroAI_BaseUI._supported_build_selected_key = build_key
+
+                    PyImGui.tree_pop()
+
+                PyImGui.tree_pop()
+            PyImGui.end_child()
+
+        PyImGui.same_line(0, 12)
+
+        if PyImGui.begin_child("SupportedBuildDetailsPane", (details_width, 0), True, PyImGui.WindowFlags.NoFlag):
+            selected_build = HeroAI_BaseUI._supported_builds_cache.get(HeroAI_BaseUI._supported_build_selected_key)
+            HeroAI_BaseUI._draw_supported_build_details(selected_build)
+            PyImGui.end_child()
+
+    @staticmethod
     def DrawBuildMatchesWindow(cached_data: CacheData):
         if not HeroAI_BaseUI.show_build_match_window:
             return
 
         HeroAI_BaseUI._refresh_build_match_rows(cached_data)
+        registry = HeroAI_BaseUI._get_build_registry()
+        PyImGui.set_next_window_size((980, 720), PyImGui.ImGuiCond.FirstUseEver)
 
-        if ImGui.Begin(ini_key=cached_data.ini_key, name="HeroAI Build Matches", p_open=True, flags=PyImGui.WindowFlags.AlwaysAutoResize):
-            PyImGui.text("Resolved from each account's shared-memory profession pair and skillbar.")
-            PyImGui.same_line(0, 12)
-            if PyImGui.button("Debug##build_match_debug"):
-                HeroAI_BaseUI._dump_build_match_debug(cached_data)
-            PyImGui.separator()
-
-            if not HeroAI_BaseUI._build_match_rows:
-                PyImGui.text("No party accounts available.")
-            else:
-                for party_pos, character_name, primary_value, secondary_value, profession_label, build_name, source_label in HeroAI_BaseUI._build_match_rows:
-                    PyImGui.text(f"{party_pos + 1}. {character_name}")
-                    if profession_label:
-                        PyImGui.same_line(220, 0)
-                        primary_prof = HeroAI_BaseUI._profession_label(primary_value)
-                        secondary_prof = HeroAI_BaseUI._profession_label(secondary_value)
-                        if secondary_prof:
-                            PyImGui.text_colored(primary_prof, HeroAI_BaseUI._profession_color(primary_value).to_tuple_normalized())
-                            PyImGui.same_line(0, 0)
-                            PyImGui.text("/")
-                            PyImGui.same_line(0, 0)
-                            PyImGui.text_colored(secondary_prof, HeroAI_BaseUI._profession_color(secondary_value).to_tuple_normalized())
-                        else:
-                            PyImGui.text_colored(primary_prof, HeroAI_BaseUI._profession_color(primary_value).to_tuple_normalized())
-                    build_color = ColorPalette.GetColor("dodger_blue") if source_label == "Matched" else ColorPalette.GetColor("gw_gold")
-                    PyImGui.text("Build:")
-                    PyImGui.same_line(220, 0)
-                    PyImGui.text_colored(build_name, build_color.to_tuple_normalized())
-                    PyImGui.same_line(0, 14)
-                    status_color = ColorPalette.GetColor("dodger_blue") if source_label == "Matched" else ColorPalette.GetColor("gw_gold")
-                    PyImGui.text_colored(source_label, status_color.to_tuple_normalized())
+        if ImGui.Begin(ini_key=cached_data.ini_key, name="HeroAI Build Matches", p_open=True, flags=PyImGui.WindowFlags.NoFlag):
+            if PyImGui.begin_tab_bar("HeroAIBuildMatchTabs"):
+                if PyImGui.begin_tab_item("Matches"):
+                    PyImGui.text("Resolved from each account's shared-memory profession pair and skillbar.")
+                    PyImGui.same_line(0, 12)
+                    if PyImGui.button("Debug##build_match_debug"):
+                        HeroAI_BaseUI._dump_build_match_debug(cached_data)
                     PyImGui.separator()
+                    HeroAI_BaseUI._draw_build_matches_tab()
+                    PyImGui.end_tab_item()
+
+                if PyImGui.begin_tab_item("Supported Builds"):
+                    HeroAI_BaseUI._draw_supported_builds_tab(registry)
+                    PyImGui.end_tab_item()
+
+                PyImGui.end_tab_bar()
 
         ImGui.End(cached_data.ini_key)
 
@@ -824,7 +1332,7 @@ class HeroAI_BaseUI:
             if party_size >= 8:
                 HeroAI_BaseUI.HeroFlags[6] = ImGui.toggle_button("7", IsHeroFlagged(7), 30, 30)
             PyImGui.table_next_column()
-            HeroAI_BaseUI.ClearFlags = ImGui.toggle_button("X", HeroAI_BaseUI.HeroFlags[7], 30, 30)
+            HeroAI_BaseUI.ClearFlags = ImGui.toggle_button("X", HeroAI_BaseUI.ClearFlags, 30, 30)
             PyImGui.end_table()
 
         if HeroAI_BaseUI.AllFlag != IsHeroFlagged(0):
@@ -1139,6 +1647,7 @@ class HeroAI_BaseUI:
         ImGui.End(cached_data.ini_key)
         HeroAI_BaseUI.DrawBuildMatchesWindow(cached_data)
         HeroAI_BaseUI.DrawFollowFormationsQuickWindow(cached_data)
+        HeroAI_BaseUI._process_flagging_runtime(cached_data)
 
     @staticmethod
     def draw_debug_window(heroai_bt=None):
