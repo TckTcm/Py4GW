@@ -674,6 +674,11 @@ def _copy_dialog_id_button(dialog_id: int, widget_id: str) -> None:
         PyImGui.set_clipboard_text(_format_dialog_id(dialog_id))
 
 
+def _copy_choice_label_button(choice: Any, widget_id: str) -> None:
+    if PyImGui.button(f"Copy Text##{widget_id}"):
+        _copy_text_to_clipboard(_choice_label(choice))
+
+
 def _same_line(spacing: float = 6.0) -> None:
     PyImGui.same_line(0.0, spacing)
 
@@ -1103,6 +1108,8 @@ def _draw_choice_panel(active, choices) -> None:
             PyImGui.text(f"[{_format_dialog_id(choice.dialog_id)}] {_choice_certainty_label(choice)} {label}")
             _same_line()
             _copy_dialog_id_button(choice.dialog_id, f"choice_{choice.dialog_id}_{index}")
+            _same_line()
+            _copy_choice_label_button(choice, f"choice_text_{choice.dialog_id}_{index}")
     PyImGui.end_child()
 
 
