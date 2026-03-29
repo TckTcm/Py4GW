@@ -111,6 +111,25 @@ def sanitize_dialog_text(value: Optional[str]) -> str:
     return _sanitize_dialog_text(value)
 
 
+def _normalize_dialog_choice_text(value: Optional[str]) -> str:
+    return " ".join(_sanitize_dialog_text(value).strip().lower().split())
+
+
+def _get_dialog_button_label(button: Any) -> str:
+    if button is None:
+        return ""
+    decoded = getattr(button, "message_decoded", "")
+    if decoded:
+        return _sanitize_dialog_text(decoded)
+    return _sanitize_dialog_text(getattr(button, "message", ""))
+
+
+def _append_unique_dialog_choice_text(values: List[str], value: Optional[str]) -> None:
+    text = _sanitize_dialog_text(value)
+    if text and text not in values:
+        values.append(text)
+
+
 def _normalize_direction_filter(direction: Optional[str]) -> Optional[bool]:
     if direction is None:
         return None
@@ -527,6 +546,169 @@ class DialogWidget:
         if PyDialog is None:
             return 0
         return PyDialog.PyDialog.get_last_selected_dialog_id()
+
+    def _get_dialog_choice_catalog_text(self, dialog_id: int) -> str:
+        if int(dialog_id) == 0:
+            return ""
+        try:
+            dialog_info = self.get_dialog_info(int(dialog_id))
+        except Exception:
+            dialog_info = None
+        if dialog_info is not None:
+            content = _sanitize_dialog_text(getattr(dialog_info, "content", ""))
+            if content:
+                return content
+        try:
+            return _sanitize_dialog_text(self.get_dialog_text_decoded(int(dialog_id)))
+        except Exception:
+            return ""
+
+    def _get_dialog_choice_history_texts(
+        self,
+        dialog_id: int,
+        *,
+        active_dialog: Optional[ActiveDialogInfo] = None,
+        history_limit: int = 25,
+    ) -> List[str]:
+        if int(dialog_id) == 0:
+            return []
+
+        query_kwargs: Dict[str, Any] = {
+            "choice_dialog_id": int(dialog_id),
+            "limit": max(1, int(history_limit)),
+            "offset": 0,
+            "include_choices": True,
+            "sync": False,
+        }
+        if active_dialog is not None:
+            body_dialog_id = int(
+                getattr(active_dialog, "context_dialog_id", 0)
+                or getattr(active_dialog, "dialog_id", 0)
+                or 0
+            )
+            if body_dialog_id != 0:
+                query_kwargs["body_dialog_id"] = body_dialog_id
+
+        try:
+            turns = self.get_dialog_turns(**query_kwargs)
+        except Exception:
+            return []
+
+        texts: List[str] = []
+        for turn in turns:
+            for choice in list(turn.get("choices", []) or []):
+                if int(choice.get("choice_dialog_id", 0) or 0) != int(dialog_id):
+                    continue
+                _append_unique_dialog_choice_text(texts, choice.get("choice_text_decoded", ""))
+                _append_unique_dialog_choice_text(texts, choice.get("choice_text_raw", ""))
+        return texts
+
+    def get_active_dialog_choice_id_by_text(self, text: Optional[str]) -> int:
+        needle = _normalize_dialog_choice_text(text)
+        if not needle or not self.is_dialog_active():
+            return 0
+
+        for button in self.get_active_dialog_buttons():
+            dialog_id = int(getattr(button, "dialog_id", 0) or 0)
+            if dialog_id == 0:
+                continue
+            if _normalize_dialog_choice_text(_get_dialog_button_label(button)) == needle:
+                return dialog_id
+        return 0
+
+    def get_active_dialog_choice_id_by_text_with_fallback(
+        self,
+        text: Optional[str],
+        *,
+        history_limit: int = 25,
+    ) -> int:
+        needle = _normalize_dialog_choice_text(text)
+        if not needle or not self.is_dialog_active():
+            return 0
+
+        buttons = list(self.get_active_dialog_buttons())
+        if not buttons:
+            return 0
+
+        for button in buttons:
+            dialog_id = int(getattr(button, "dialog_id", 0) or 0)
+            if dialog_id == 0:
+                continue
+            if _normalize_dialog_choice_text(_get_dialog_button_label(button)) == needle:
+                return dialog_id
+
+        for button in buttons:
+            dialog_id = int(getattr(button, "dialog_id", 0) or 0)
+            if dialog_id == 0:
+                continue
+            if _normalize_dialog_choice_text(self._get_dialog_choice_catalog_text(dialog_id)) == needle:
+                return dialog_id
+
+        active_dialog = self.get_active_dialog()
+        try:
+            self.sync_dialog_storage(include_raw=False, include_callback_journal=True)
+        except Exception:
+            pass
+
+        for button in buttons:
+            dialog_id = int(getattr(button, "dialog_id", 0) or 0)
+            if dialog_id == 0:
+                continue
+            history_texts = self._get_dialog_choice_history_texts(
+                dialog_id,
+                active_dialog=active_dialog,
+                history_limit=history_limit,
+            )
+            for candidate in history_texts:
+                if _normalize_dialog_choice_text(candidate) == needle:
+                    return dialog_id
+        return 0
+
+    def send_active_dialog_choice_by_text(self, text: Optional[str]) -> bool:
+        dialog_id = self.get_active_dialog_choice_id_by_text(text)
+        if dialog_id == 0:
+            return False
+
+        try:
+            from .Player import Player
+        except Exception:
+            try:
+                from Player import Player  # type: ignore
+            except Exception:
+                return False
+
+        try:
+            Player.SendDialog(dialog_id)
+            return True
+        except Exception:
+            return False
+
+    def send_active_dialog_choice_by_text_with_fallback(
+        self,
+        text: Optional[str],
+        *,
+        history_limit: int = 25,
+    ) -> bool:
+        dialog_id = self.get_active_dialog_choice_id_by_text_with_fallback(
+            text,
+            history_limit=history_limit,
+        )
+        if dialog_id == 0:
+            return False
+
+        try:
+            from .Player import Player
+        except Exception:
+            try:
+                from Player import Player  # type: ignore
+            except Exception:
+                return False
+
+        try:
+            Player.SendDialog(dialog_id)
+            return True
+        except Exception:
+            return False
 
     def get_dialog_text_decoded(self, dialog_id: int) -> str:
         catalog = _get_dialog_catalog_widget()
@@ -1176,6 +1358,36 @@ def get_active_dialog_buttons() -> List[DialogButtonInfo]:
 
 def get_last_selected_dialog_id() -> int:
     return get_dialog_widget().get_last_selected_dialog_id()
+
+
+def get_active_dialog_choice_id_by_text(text: Optional[str]) -> int:
+    return get_dialog_widget().get_active_dialog_choice_id_by_text(text)
+
+
+def send_active_dialog_choice_by_text(text: Optional[str]) -> bool:
+    return get_dialog_widget().send_active_dialog_choice_by_text(text)
+
+
+def get_active_dialog_choice_id_by_text_with_fallback(
+    text: Optional[str],
+    *,
+    history_limit: int = 25,
+) -> int:
+    return get_dialog_widget().get_active_dialog_choice_id_by_text_with_fallback(
+        text,
+        history_limit=history_limit,
+    )
+
+
+def send_active_dialog_choice_by_text_with_fallback(
+    text: Optional[str],
+    *,
+    history_limit: int = 25,
+) -> bool:
+    return get_dialog_widget().send_active_dialog_choice_by_text_with_fallback(
+        text,
+        history_limit=history_limit,
+    )
 
 
 def get_dialog_text_decoded(dialog_id: int) -> str:
