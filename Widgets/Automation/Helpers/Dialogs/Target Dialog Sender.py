@@ -761,7 +761,6 @@ def main() -> None:
             _draw_widget()
     except Exception as exc:
         _state.status_text = f"Error: {exc}"
-        Py4GW.Console.Log(MODULE_NAME, f"Unexpected error: {exc}", Py4GW.Console.MessageType.Error)
 
 
 _load_state()
