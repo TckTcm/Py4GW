@@ -130,6 +130,55 @@ def _append_unique_dialog_choice_text(values: List[str], value: Optional[str]) -
         values.append(text)
 
 
+def _build_active_dialog_npc_filters(active_dialog: Optional["ActiveDialogInfo"]) -> Dict[str, Any]:
+    if active_dialog is None:
+        return {}
+
+    agent_id = int(getattr(active_dialog, "agent_id", 0) or 0)
+    if agent_id <= 0:
+        return {}
+
+    map_id = 0
+    model_id = 0
+
+    try:
+        from .Map import Map
+    except Exception:
+        try:
+            from Map import Map  # type: ignore
+        except Exception:
+            Map = None  # type: ignore
+
+    try:
+        from .Agent import Agent
+    except Exception:
+        try:
+            from Agent import Agent  # type: ignore
+        except Exception:
+            Agent = None  # type: ignore
+
+    if Map is not None:
+        try:
+            map_id = int(Map.GetMapID() or 0)
+        except Exception:
+            map_id = 0
+
+    if Agent is not None:
+        try:
+            model_id = int(Agent.GetModelID(agent_id) or 0)
+        except Exception:
+            model_id = 0
+
+    if map_id <= 0 or model_id <= 0:
+        return {}
+
+    npc_uid_archetype = f"{map_id}:{model_id}"
+    return {
+        "npc_uid_instance": f"{npc_uid_archetype}:{agent_id}",
+        "npc_uid_archetype": npc_uid_archetype,
+    }
+
+
 def _normalize_direction_filter(direction: Optional[str]) -> Optional[bool]:
     if direction is None:
         return None
@@ -588,6 +637,7 @@ class DialogWidget:
             )
             if body_dialog_id != 0:
                 query_kwargs["body_dialog_id"] = body_dialog_id
+            query_kwargs.update(_build_active_dialog_npc_filters(active_dialog))
 
         try:
             turns = self.get_dialog_turns(**query_kwargs)
@@ -760,6 +810,8 @@ class DialogWidget:
         if PyDialog is None:
             return None
         native_info = PyDialog.PyDialog.get_dialog_info(dialog_id)
+        if native_info is None:
+            return None
         return DialogInfo(native_info)
 
     def enumerate_available_dialogs(self) -> List[DialogInfo]:
@@ -1408,6 +1460,18 @@ def is_dialog_displayed(dialog_id: int) -> bool:
 
 def get_dialog_text_decode_status() -> List[DialogTextDecodedInfo]:
     return get_dialog_widget().get_dialog_text_decode_status()
+
+
+def is_dialog_available(dialog_id: int) -> bool:
+    return get_dialog_widget().is_dialog_available(dialog_id)
+
+
+def get_dialog_info(dialog_id: int) -> Optional[DialogInfo]:
+    return get_dialog_widget().get_dialog_info(dialog_id)
+
+
+def enumerate_available_dialogs() -> List[DialogInfo]:
+    return get_dialog_widget().enumerate_available_dialogs()
 
 
 def get_dialog_event_logs() -> List:

@@ -32,6 +32,12 @@ _TAB_DEBUG = "Debug"
 _LOGS_TAB_RAW = "Raw"
 _LOGS_TAB_JOURNAL = "Journal"
 _PLAYER_NAME_PLACEHOLDER = "<character name>"
+_REDACTION_BLOCKED_PLACEHOLDER = "<redaction unavailable; text hidden>"
+_REDACTION_BLOCKED_REASON = "player-name redaction unavailable; telemetry text copy/export is blocked"
+
+
+class _PlayerNameRedactionUnavailable(RuntimeError):
+    pass
 
 
 class _TimedValueCache:
@@ -209,24 +215,50 @@ def _get_current_player_name() -> str:
         return ""
 
 
+def _get_player_name_for_redaction(*, fail_closed: bool = False, text: Any = None) -> str:
+    player_name = _get_current_player_name()
+    if fail_closed and text is not None and str(text):
+        if not player_name:
+            raise _PlayerNameRedactionUnavailable(_REDACTION_BLOCKED_REASON)
+    return player_name
+
+
 def _obfuscate_player_name_text(value: Any) -> str:
     text = "" if value is None else str(value)
-    player_name = _get_current_player_name()
-    if not text or not player_name:
-        return text
+    if not text:
+        return ""
+    player_name = _get_player_name_for_redaction(text=text)
+    if not player_name:
+        return _REDACTION_BLOCKED_PLACEHOLDER
     return re.sub(re.escape(player_name), _PLAYER_NAME_PLACEHOLDER, text, flags=re.IGNORECASE)
 
 
-def _obfuscate_player_name_value(value: Any) -> Any:
+def _obfuscate_player_name_text_for_export(value: Any) -> str:
+    text = "" if value is None else str(value)
+    if not text:
+        return text
+    player_name = _get_player_name_for_redaction(fail_closed=True, text=text)
+    return re.sub(re.escape(player_name), _PLAYER_NAME_PLACEHOLDER, text, flags=re.IGNORECASE)
+
+
+def _obfuscate_player_name_value(value: Any, *, fail_closed: bool = False) -> Any:
     if isinstance(value, str):
+        if fail_closed:
+            return _obfuscate_player_name_text_for_export(value)
         return _obfuscate_player_name_text(value)
     if isinstance(value, list):
-        return [_obfuscate_player_name_value(item) for item in value]
+        return [_obfuscate_player_name_value(item, fail_closed=fail_closed) for item in value]
     if isinstance(value, tuple):
-        return tuple(_obfuscate_player_name_value(item) for item in value)
+        return tuple(_obfuscate_player_name_value(item, fail_closed=fail_closed) for item in value)
     if isinstance(value, dict):
-        return {key: _obfuscate_player_name_value(item) for key, item in value.items()}
+        return {key: _obfuscate_player_name_value(item, fail_closed=fail_closed) for key, item in value.items()}
     return value
+
+
+def _current_privacy_status_message() -> str:
+    if _get_current_player_name():
+        return ""
+    return "privacy mode: player name unavailable, dialog text is hidden and telemetry text copy/export is blocked"
 
 
 class _InlineDialogChoice:
@@ -845,16 +877,25 @@ def _copy_all_ids_to_clipboard() -> None:
 
 
 def _copy_text_to_clipboard(text: Any) -> None:
-    PyImGui.set_clipboard_text(_obfuscate_player_name_text(text))
+    try:
+        PyImGui.set_clipboard_text(_obfuscate_player_name_text_for_export(text))
+        _state.last_file_action_error = ""
+    except _PlayerNameRedactionUnavailable as exc:
+        _state.last_file_action_error = str(exc)
 
 
 def _copy_json_to_clipboard(payload: Any) -> None:
-    PyImGui.set_clipboard_text(json.dumps(_obfuscate_player_name_value(payload), ensure_ascii=False))
+    try:
+        PyImGui.set_clipboard_text(json.dumps(_obfuscate_player_name_value(payload, fail_closed=True), ensure_ascii=False))
+        _state.last_file_action_error = ""
+    except _PlayerNameRedactionUnavailable as exc:
+        _state.last_file_action_error = str(exc)
 
 
 def _write_obfuscated_json(path: str, payload: Any) -> None:
+    sanitized_payload = _obfuscate_player_name_value(payload, fail_closed=True)
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(_obfuscate_player_name_value(payload), handle, indent=2, ensure_ascii=False)
+        json.dump(sanitized_payload, handle, indent=2, ensure_ascii=False)
 
 
 def _dump_monitor_snapshot() -> None:
@@ -987,6 +1028,9 @@ def _draw_status_messages() -> None:
         f"journal={int(sync_result.get('journal_inserted', 0))} "
         f"turns={int(sync_result.get('turns_finalized', 0))}"
     )
+    privacy_status = _current_privacy_status_message()
+    if privacy_status:
+        PyImGui.text_wrapped(privacy_status)
     if _state.last_sync_error:
         PyImGui.text_wrapped(_obfuscate_player_name_text(f"sync error: {_state.last_sync_error}"))
     if _state.last_file_action_error:
@@ -1082,7 +1126,7 @@ def _draw_history_panel() -> None:
                 f"body={_format_dialog_id(body_id)} selected={_format_dialog_id(selected_id)} "
                 f"reason={reason}"
             )
-            if needle and needle not in f"{line} {body_text}".lower():
+            if needle and needle not in f"{line} {display_body_text}".lower():
                 continue
             PyImGui.text_wrapped(line)
             if display_body_text:
@@ -1157,7 +1201,7 @@ def _draw_raw_logs_panel() -> None:
             line = _format_raw_log_line(event)
             event_text = str(event.get("text_raw", "") or "") if isinstance(event, dict) else ""
             display_event_text = _obfuscate_player_name_text(event_text)
-            if needle and needle not in f"{line} {event_text}".lower():
+            if needle and needle not in f"{line} {display_event_text}".lower():
                 continue
             PyImGui.text_wrapped(line)
             if display_event_text:
@@ -1229,7 +1273,7 @@ def _draw_callback_journal_panel() -> None:
                 f"[{certainty['short_label']}] agent={agent_id}"
             )
             if needle:
-                haystack = f"{line} {npc_uid} {event_text}".lower()
+                haystack = f"{line} {npc_uid} {display_event_text}".lower()
                 if needle not in haystack:
                     continue
             PyImGui.text_wrapped(line)
@@ -1314,7 +1358,7 @@ def _draw_ledger_panel() -> None:
                 f"selected={_format_dialog_id(selected_id)} choices={len(choices)} reason={reason}"
             )
             if needle:
-                haystack = f"{line} {body_text}".lower()
+                haystack = f"{line} {display_body_text}".lower()
                 if needle not in haystack:
                     continue
             PyImGui.text_wrapped(line)

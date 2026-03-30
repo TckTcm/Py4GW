@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -116,6 +117,13 @@ class DialogActiveMonitorTests(unittest.TestCase):
 
         self.assertEqual("Greetings, <character name>.", masked)
 
+    def test_player_name_text_is_hidden_when_redaction_is_unavailable(self):
+        self.module.Player.GetName = lambda: ""
+
+        masked = self.module._obfuscate_player_name_text("Greetings, Test Character.")
+
+        self.assertEqual(self.module._REDACTION_BLOCKED_PLACEHOLDER, masked)
+
     def test_recursive_payload_obfuscation_masks_only_player_name(self):
         payload = {
             "body_text_raw": "Hello Test Character",
@@ -132,6 +140,12 @@ class DialogActiveMonitorTests(unittest.TestCase):
         self.assertEqual("Speak to <character name> now.", masked["choices"][0]["choice_text_raw"])
         self.assertEqual("Speak to Master Togo now.", masked["choices"][1]["choice_text_raw"])
         self.assertEqual("<character name> and Mhenlo", masked["nested"]["text"])
+
+    def test_fail_closed_payload_obfuscation_raises_when_redaction_is_unavailable(self):
+        self.module.Player.GetName = lambda: ""
+
+        with self.assertRaises(self.module._PlayerNameRedactionUnavailable):
+            self.module._obfuscate_player_name_value({"body_text_raw": "Hello Test Character"}, fail_closed=True)
 
     def test_sync_core_storage_records_last_error(self):
         state = self.module.DialogMonitorState()
@@ -180,6 +194,31 @@ class DialogActiveMonitorTests(unittest.TestCase):
         self.module._copy_choice_label_button(choice, "choice_text_0")
 
         self.assertEqual(["Accept quest"], clipboard)
+
+    def test_copy_text_to_clipboard_is_blocked_when_redaction_is_unavailable(self):
+        clipboard: list[str] = []
+        self.module.Player.GetName = lambda: ""
+        self.module.PyImGui.set_clipboard_text = lambda value: clipboard.append(str(value))
+        self.module._state.last_file_action_error = ""
+
+        self.module._copy_text_to_clipboard("Hello Test Character")
+
+        self.assertEqual([], clipboard)
+        self.assertIn("redaction unavailable", self.module._state.last_file_action_error.lower())
+
+    def test_write_obfuscated_json_does_not_create_file_when_redaction_is_unavailable(self):
+        self.module.Player.GetName = lambda: ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = Path(temp_dir) / "blocked.json"
+
+            with self.assertRaises(self.module._PlayerNameRedactionUnavailable):
+                self.module._write_obfuscated_json(
+                    str(export_path),
+                    {"body_text_raw": "Hello Test Character"},
+                )
+
+            self.assertFalse(export_path.exists())
 
 
 if __name__ == "__main__":
