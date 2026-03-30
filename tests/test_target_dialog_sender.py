@@ -51,10 +51,11 @@ def _load_target_dialog_sender():
     for name in (module_name, "Py4GW", "Py4GWCoreLib"):
         sys.modules.pop(name, None)
 
+    console_calls = []
     py4gw_module = types.ModuleType("Py4GW")
     py4gw_module.Console = types.SimpleNamespace(
         get_projects_path=lambda: str(REPO_ROOT),
-        Log=lambda *_args, **_kwargs: None,
+        Log=lambda *args, **kwargs: console_calls.append((args, kwargs)),
         MessageType=types.SimpleNamespace(Error="error"),
     )
     sys.modules["Py4GW"] = py4gw_module
@@ -129,12 +130,19 @@ def _load_target_dialog_sender():
     assert spec.loader is not None
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
-    return module, _FakePlayer, dialog_module, player_calls, dialog_calls
+    return module, _FakePlayer, dialog_module, player_calls, dialog_calls, console_calls
 
 
 class TargetDialogSenderChoiceTextTests(unittest.TestCase):
     def setUp(self):
-        self.module, self.player_cls, self.dialog_module, self.player_calls, self.dialog_calls = _load_target_dialog_sender()
+        (
+            self.module,
+            self.player_cls,
+            self.dialog_module,
+            self.player_calls,
+            self.dialog_calls,
+            self.console_calls,
+        ) = _load_target_dialog_sender()
 
     def test_resolve_choice_text_dialog_id_uses_live_helper_in_live_mode(self):
         self.dialog_module.get_active_dialog_choice_id_by_text = lambda text: self.dialog_calls["live"].append(str(text)) or 0x84
@@ -181,6 +189,14 @@ class TargetDialogSenderChoiceTextTests(unittest.TestCase):
 
         self.assertEqual([], self.player_calls["send_dialog"])
         self.assertIn("Could not resolve", self.module._state.status_text)
+
+    def test_main_reports_widget_errors_without_console_logging(self):
+        self.module._draw_widget = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+
+        self.module.main()
+
+        self.assertEqual("Error: boom", self.module._state.status_text)
+        self.assertEqual([], self.console_calls)
 
 
 if __name__ == "__main__":
