@@ -38,6 +38,8 @@ def _safe_text(value: Any) -> str:
 
 
 def _event_field(event: Any, name: str, index: int, default: Any) -> Any:
+    if isinstance(event, dict):
+        return event.get(name, default)
     if hasattr(event, name):
         return getattr(event, name)
     if isinstance(event, (tuple, list)) and len(event) > index:
@@ -161,6 +163,74 @@ def _build_npc_archetype_uid(map_id: int, model_id: int) -> str:
     return f"{int(map_id)}:{int(model_id)}"
 
 
+def _resolve_map_name(map_id: int) -> str:
+    resolved_map_id = int(map_id or 0)
+    if resolved_map_id <= 0:
+        return ""
+    try:
+        from .Map import Map
+    except Exception:
+        try:
+            from Map import Map  # type: ignore
+        except Exception:
+            return ""
+    try:
+        name = _safe_text(Map.GetMapName(resolved_map_id)).strip()
+    except Exception:
+        return ""
+    if not name or name == "Unknown Map ID":
+        return ""
+    return name
+
+
+def _resolve_current_map_id() -> int:
+    try:
+        from .Map import Map
+    except Exception:
+        try:
+            from Map import Map  # type: ignore
+        except Exception:
+            return 0
+    try:
+        return int(Map.GetMapID() or 0)
+    except Exception:
+        return 0
+
+
+def _resolve_model_id(agent_id: int) -> int:
+    resolved_agent_id = int(agent_id or 0)
+    if resolved_agent_id <= 0:
+        return 0
+    try:
+        from .Agent import Agent
+    except Exception:
+        try:
+            from Agent import Agent  # type: ignore
+        except Exception:
+            return 0
+    try:
+        return int(Agent.GetModelID(resolved_agent_id) or 0)
+    except Exception:
+        return 0
+
+
+def _resolve_npc_name(agent_id: int) -> str:
+    resolved_agent_id = int(agent_id or 0)
+    if resolved_agent_id <= 0:
+        return ""
+    try:
+        from .Agent import Agent
+    except Exception:
+        try:
+            from Agent import Agent  # type: ignore
+        except Exception:
+            return ""
+    try:
+        return _safe_text(Agent.GetNameByID(resolved_agent_id)).strip()
+    except Exception:
+        return ""
+
+
 class DialogStepSQLitePipeline:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -216,6 +286,7 @@ class DialogStepSQLitePipeline:
                 if latest_tick:
                     finalized_steps += self._finalize_stale_steps(conn, latest_tick, current_map_id=0)
                 self._repair_persisted_step_rows(conn)
+                self._backfill_display_names(conn)
             return {
                 "raw_inserted": inserted_raw,
                 "journal_inserted": inserted_journal,
@@ -259,7 +330,7 @@ class DialogStepSQLitePipeline:
             params.append(event_type_filter)
 
         sql = (
-            "SELECT id, tick, ts, message_id, incoming, map_id, agent_id, model_id, npc_uid, "
+            "SELECT id, tick, ts, message_id, incoming, map_id, map_name, agent_id, npc_name, model_id, npc_uid, "
             "dialog_id, context_dialog_id, event_type, text_raw FROM raw_callbacks"
         )
         if where:
@@ -335,7 +406,7 @@ class DialogStepSQLitePipeline:
 
         sql = (
             "SELECT id, tick, ts, message_id, incoming, dialog_id, context_dialog_id, "
-            "agent_id, map_id, model_id, npc_uid, event_type, text_raw, text_decoded "
+            "agent_id, map_id, map_name, model_id, npc_uid, npc_name, event_type, text_raw, text_decoded "
             "FROM callback_journal"
         )
         if where:
@@ -418,7 +489,7 @@ class DialogStepSQLitePipeline:
             params.append(int(choice_dialog_id))
 
         sql = (
-            "SELECT t.id, t.start_tick, t.end_tick, t.map_id, t.agent_id, t.model_id, "
+            "SELECT t.id, t.start_tick, t.end_tick, t.map_id, t.map_name, t.agent_id, t.npc_name, t.model_id, "
             "t.npc_uid_instance, t.npc_uid_archetype, t.body_dialog_id, t.body_text_raw, "
             "t.body_text_decoded, t.selected_dialog_id, t.selected_source_message_id, "
             "t.finalized_reason, t.created_at FROM dialog_steps t"
@@ -445,7 +516,7 @@ class DialogStepSQLitePipeline:
         with self._lock:
             conn = self._ensure_connection()
             row = conn.execute(
-                "SELECT id, start_tick, end_tick, map_id, agent_id, model_id, "
+                "SELECT id, start_tick, end_tick, map_id, map_name, agent_id, npc_name, model_id, "
                 "npc_uid_instance, npc_uid_archetype, body_dialog_id, body_text_raw, "
                 "body_text_decoded, selected_dialog_id, selected_source_message_id, "
                 "finalized_reason, created_at FROM dialog_steps WHERE id = ?",
@@ -649,6 +720,14 @@ class DialogStepSQLitePipeline:
         return conn
 
     def _create_schema(self, conn: sqlite3.Connection) -> None:
+        self._create_base_schema(conn)
+        self._migrate_legacy_step_schema(conn)
+        self._ensure_display_name_columns(conn)
+        self._create_current_step_schema(conn)
+        self._create_display_name_indexes(conn)
+        self._backfill_display_names(conn)
+
+    def _create_base_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS raw_callbacks (
@@ -663,7 +742,9 @@ class DialogStepSQLitePipeline:
                 w_bytes_hex TEXT NOT NULL DEFAULT '',
                 l_bytes_hex TEXT NOT NULL DEFAULT '',
                 map_id INTEGER NOT NULL DEFAULT 0,
+                map_name TEXT NOT NULL DEFAULT '',
                 agent_id INTEGER NOT NULL DEFAULT 0,
+                npc_name TEXT NOT NULL DEFAULT '',
                 model_id INTEGER NOT NULL DEFAULT 0,
                 npc_uid TEXT NOT NULL DEFAULT '',
                 dialog_id INTEGER NOT NULL DEFAULT 0,
@@ -683,19 +764,36 @@ class DialogStepSQLitePipeline:
                 context_dialog_id INTEGER NOT NULL DEFAULT 0,
                 agent_id INTEGER NOT NULL DEFAULT 0,
                 map_id INTEGER NOT NULL DEFAULT 0,
+                map_name TEXT NOT NULL DEFAULT '',
                 model_id INTEGER NOT NULL DEFAULT 0,
                 npc_uid TEXT NOT NULL DEFAULT '',
+                npc_name TEXT NOT NULL DEFAULT '',
                 event_type TEXT NOT NULL DEFAULT '',
                 text_raw TEXT NOT NULL DEFAULT '',
                 text_decoded TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE INDEX IF NOT EXISTS idx_raw_tick ON raw_callbacks(tick);
+            CREATE INDEX IF NOT EXISTS idx_raw_message ON raw_callbacks(message_id);
+            CREATE INDEX IF NOT EXISTS idx_raw_npc_uid ON raw_callbacks(npc_uid);
+            CREATE INDEX IF NOT EXISTS idx_raw_map_id ON raw_callbacks(map_id);
+
+            CREATE INDEX IF NOT EXISTS idx_journal_tick ON callback_journal(tick);
+            CREATE INDEX IF NOT EXISTS idx_journal_message ON callback_journal(message_id);
+            CREATE INDEX IF NOT EXISTS idx_journal_npc_uid ON callback_journal(npc_uid);
+            CREATE INDEX IF NOT EXISTS idx_journal_event_type ON callback_journal(event_type);
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS dialog_steps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 start_tick INTEGER NOT NULL,
                 end_tick INTEGER NOT NULL DEFAULT 0,
                 map_id INTEGER NOT NULL DEFAULT 0,
+                map_name TEXT NOT NULL DEFAULT '',
                 agent_id INTEGER NOT NULL DEFAULT 0,
+                npc_name TEXT NOT NULL DEFAULT '',
                 model_id INTEGER NOT NULL DEFAULT 0,
                 npc_uid_instance TEXT NOT NULL DEFAULT '',
                 npc_uid_archetype TEXT NOT NULL DEFAULT '',
@@ -706,8 +804,13 @@ class DialogStepSQLitePipeline:
                 selected_source_message_id INTEGER NOT NULL DEFAULT 0,
                 finalized_reason TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL
-            );
+            )
+            """
+        )
 
+    def _create_current_step_schema(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS dialog_choices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 step_id INTEGER NOT NULL,
@@ -723,27 +826,148 @@ class DialogStepSQLitePipeline:
                 FOREIGN KEY(step_id) REFERENCES dialog_steps(id) ON DELETE CASCADE
             );
 
-            CREATE INDEX IF NOT EXISTS idx_raw_tick ON raw_callbacks(tick);
-            CREATE INDEX IF NOT EXISTS idx_raw_message ON raw_callbacks(message_id);
-            CREATE INDEX IF NOT EXISTS idx_raw_npc_uid ON raw_callbacks(npc_uid);
-            CREATE INDEX IF NOT EXISTS idx_raw_map_id ON raw_callbacks(map_id);
-
-            CREATE INDEX IF NOT EXISTS idx_journal_tick ON callback_journal(tick);
-            CREATE INDEX IF NOT EXISTS idx_journal_message ON callback_journal(message_id);
-            CREATE INDEX IF NOT EXISTS idx_journal_npc_uid ON callback_journal(npc_uid);
-            CREATE INDEX IF NOT EXISTS idx_journal_event_type ON callback_journal(event_type);
-
             CREATE INDEX IF NOT EXISTS idx_steps_map ON dialog_steps(map_id);
             CREATE INDEX IF NOT EXISTS idx_steps_npc_instance ON dialog_steps(npc_uid_instance);
             CREATE INDEX IF NOT EXISTS idx_steps_npc_archetype ON dialog_steps(npc_uid_archetype);
             CREATE INDEX IF NOT EXISTS idx_steps_body_dialog_id ON dialog_steps(body_dialog_id);
             CREATE INDEX IF NOT EXISTS idx_steps_created_at ON dialog_steps(created_at);
+            CREATE INDEX IF NOT EXISTS idx_steps_map_name ON dialog_steps(map_name);
+            CREATE INDEX IF NOT EXISTS idx_steps_npc_name ON dialog_steps(npc_name);
 
             CREATE INDEX IF NOT EXISTS idx_choices_step ON dialog_choices(step_id);
             CREATE INDEX IF NOT EXISTS idx_choices_dialog_id ON dialog_choices(choice_dialog_id);
             CREATE INDEX IF NOT EXISTS idx_choices_selected ON dialog_choices(selected);
             """
         )
+
+    def _ensure_display_name_columns(self, conn: sqlite3.Connection) -> None:
+        self._ensure_column(conn, "raw_callbacks", "map_name", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(conn, "raw_callbacks", "npc_name", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(conn, "callback_journal", "map_name", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(conn, "callback_journal", "npc_name", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(conn, "dialog_steps", "map_name", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(conn, "dialog_steps", "npc_name", "TEXT NOT NULL DEFAULT ''")
+
+    def _ensure_column(self, conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})")}
+        if column_name in columns:
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _backfill_display_names(self, conn: sqlite3.Connection) -> None:
+        self._backfill_table_display_names(conn, "raw_callbacks")
+        self._backfill_table_display_names(conn, "callback_journal")
+        self._backfill_table_display_names(conn, "dialog_steps")
+
+    def _create_display_name_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_map_name ON raw_callbacks(map_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_npc_name ON raw_callbacks(npc_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_map_name ON callback_journal(map_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_npc_name ON callback_journal(npc_name)")
+
+    def _backfill_table_display_names(self, conn: sqlite3.Connection, table_name: str) -> None:
+        rows = conn.execute(
+            f"""
+            SELECT id, map_id, IFNULL(map_name, ''), agent_id, IFNULL(npc_name, '')
+            FROM {table_name}
+            WHERE IFNULL(map_name, '') = '' OR IFNULL(npc_name, '') = ''
+            """
+        ).fetchall()
+        if not rows:
+            return
+
+        map_cache: Dict[int, str] = {}
+        npc_cache: Dict[int, str] = {}
+        updates: List[Tuple[str, str, int]] = []
+        for row_id, map_id, map_name, agent_id, npc_name in rows:
+            resolved_map_id = int(map_id or 0)
+            resolved_agent_id = int(agent_id or 0)
+            next_map_name = _safe_text(map_name)
+            next_npc_name = _safe_text(npc_name)
+            if not next_map_name and resolved_map_id > 0:
+                next_map_name = map_cache.setdefault(resolved_map_id, _resolve_map_name(resolved_map_id))
+            if not next_npc_name and resolved_agent_id > 0:
+                next_npc_name = npc_cache.setdefault(resolved_agent_id, _resolve_npc_name(resolved_agent_id))
+            if next_map_name != _safe_text(map_name) or next_npc_name != _safe_text(npc_name):
+                updates.append((next_map_name, next_npc_name, int(row_id)))
+        if updates:
+            conn.executemany(
+                f"UPDATE {table_name} SET map_name = ?, npc_name = ? WHERE id = ?",
+                updates,
+            )
+
+    def _migrate_legacy_step_schema(self, conn: sqlite3.Connection) -> None:
+        table_names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "dialog_turns" not in table_names and "dialog_choices" not in table_names:
+            return
+
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            if "dialog_turns" in table_names:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO dialog_steps (
+                        id, start_tick, end_tick, map_id, agent_id, model_id,
+                        npc_uid_instance, npc_uid_archetype, body_dialog_id,
+                        body_text_raw, body_text_decoded, selected_dialog_id,
+                        selected_source_message_id, finalized_reason, created_at
+                    )
+                    SELECT
+                        id, start_tick, end_tick, map_id, agent_id, model_id,
+                        npc_uid_instance, npc_uid_archetype, body_dialog_id,
+                        body_text_raw, body_text_decoded, selected_dialog_id,
+                        selected_source_message_id, finalized_reason, created_at
+                    FROM dialog_turns
+                    """
+                )
+                conn.execute("DROP TABLE dialog_turns")
+
+            if "dialog_choices" in table_names:
+                columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(dialog_choices)")}
+                if "turn_id" in columns and "step_id" not in columns:
+                    conn.execute("DROP INDEX IF EXISTS idx_choices_turn")
+                    conn.execute("DROP INDEX IF EXISTS idx_choices_step")
+                    conn.execute("ALTER TABLE dialog_choices RENAME TO dialog_choices_legacy")
+                    conn.execute(
+                        """
+                        CREATE TABLE dialog_choices (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            step_id INTEGER NOT NULL,
+                            choice_index INTEGER NOT NULL DEFAULT 0,
+                            choice_dialog_id INTEGER NOT NULL DEFAULT 0,
+                            choice_text_raw TEXT NOT NULL DEFAULT '',
+                            choice_text_decoded TEXT NOT NULL DEFAULT '',
+                            skill_id INTEGER NOT NULL DEFAULT 0,
+                            button_icon INTEGER NOT NULL DEFAULT 0,
+                            decode_pending INTEGER NOT NULL DEFAULT 0,
+                            selected INTEGER NOT NULL DEFAULT 0,
+                            source_message_id INTEGER NOT NULL DEFAULT 0,
+                            FOREIGN KEY(step_id) REFERENCES dialog_steps(id) ON DELETE CASCADE
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO dialog_choices (
+                            id, step_id, choice_index, choice_dialog_id, choice_text_raw,
+                            choice_text_decoded, skill_id, button_icon, decode_pending,
+                            selected, source_message_id
+                        )
+                        SELECT
+                            c.id, c.turn_id, c.choice_index, c.choice_dialog_id, c.choice_text_raw,
+                            c.choice_text_decoded, c.skill_id, c.button_icon, c.decode_pending,
+                            c.selected, c.source_message_id
+                        FROM dialog_choices_legacy c
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM dialog_steps s
+                            WHERE s.id = c.turn_id
+                        )
+                        """
+                    )
+                    conn.execute("DROP TABLE dialog_choices_legacy")
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
     def _insert_raw_callbacks(self, conn: sqlite3.Connection, raw_events: Sequence[Any]) -> int:
         inserted = 0
@@ -757,6 +981,24 @@ class DialogStepSQLitePipeline:
             w_bytes_hex = _event_bytes_hex(event, "w_bytes", 5)
             l_bytes_hex = _event_bytes_hex(event, "l_bytes", 6)
             dialog_id_hint, agent_id_hint, event_type_hint = _dialog_raw_hints(message_id, w_bytes)
+            map_id = _to_int(_event_field(event, "map_id", 7, 0), 0)
+            if map_id <= 0:
+                map_id = _resolve_current_map_id()
+            agent_id = _to_int(_event_field(event, "agent_id", 8, agent_id_hint), 0) or agent_id_hint
+            model_id = _to_int(_event_field(event, "model_id", 9, 0), 0)
+            if model_id <= 0 and agent_id > 0:
+                model_id = _resolve_model_id(agent_id)
+            npc_uid = _safe_text(_event_field(event, "npc_uid", 10, ""))
+            if not npc_uid:
+                npc_uid = _build_npc_uid(map_id, model_id, agent_id)
+            dialog_id = _to_int(_event_field(event, "dialog_id", 11, dialog_id_hint), 0) or dialog_id_hint
+            context_dialog_id = _to_int(_event_field(event, "context_dialog_id", 12, 0), 0)
+            event_type = _safe_text(_event_field(event, "event_type", 13, event_type_hint)).strip().lower()
+            if not event_type:
+                event_type = event_type_hint
+            text_raw = _safe_text(_event_field(event, "text_raw", 14, _event_field(event, "text", 15, "")))
+            map_name = _safe_text(_event_field(event, "map_name", 16, "")).strip() or _resolve_map_name(map_id)
+            npc_name = _safe_text(_event_field(event, "npc_name", 17, "")).strip() or _resolve_npc_name(agent_id)
             event_key = _sha1_key(
                 f"raw|{tick}|{message_id}|{1 if incoming else 0}|{1 if is_frame_message else 0}|"
                 f"{frame_id}|{w_bytes_hex}|{l_bytes_hex}"
@@ -767,9 +1009,9 @@ class DialogStepSQLitePipeline:
                 """
                 INSERT OR IGNORE INTO raw_callbacks (
                     event_key, tick, ts, message_id, incoming, is_frame_message, frame_id,
-                    w_bytes_hex, l_bytes_hex, map_id, agent_id, model_id, npc_uid,
+                    w_bytes_hex, l_bytes_hex, map_id, map_name, agent_id, npc_name, model_id, npc_uid,
                     dialog_id, context_dialog_id, event_type, text_raw
-                ) VALUES (?, ?, ?, ?, ?, 0, 0, '', '', 0, ?, 0, '', ?, 0, ?, '')
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_key,
@@ -777,9 +1019,20 @@ class DialogStepSQLitePipeline:
                     float(time.time()),
                     message_id,
                     1 if incoming else 0,
-                    agent_id_hint,
-                    dialog_id_hint,
-                    event_type_hint,
+                    1 if is_frame_message else 0,
+                    frame_id,
+                    w_bytes_hex,
+                    l_bytes_hex,
+                    map_id,
+                    map_name,
+                    agent_id,
+                    npc_name,
+                    model_id,
+                    npc_uid,
+                    dialog_id,
+                    context_dialog_id,
+                    event_type,
+                    text_raw,
                 ),
             )
             if int(cursor.rowcount or 0) > 0:
@@ -820,8 +1073,8 @@ class DialogStepSQLitePipeline:
                 """
                 INSERT OR IGNORE INTO callback_journal (
                     event_key, tick, ts, message_id, incoming, dialog_id, context_dialog_id,
-                    agent_id, map_id, model_id, npc_uid, event_type, text_raw, text_decoded
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    agent_id, map_id, map_name, model_id, npc_uid, npc_name, event_type, text_raw, text_decoded
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_key,
@@ -833,8 +1086,10 @@ class DialogStepSQLitePipeline:
                     normalized["context_dialog_id"],
                     normalized["agent_id"],
                     normalized["map_id"],
+                    normalized["map_name"],
                     normalized["model_id"],
                     normalized["npc_uid"],
+                    normalized["npc_name"],
                     normalized["event_type"],
                     normalized["text_raw"],
                     normalized["text_decoded"],
@@ -859,8 +1114,14 @@ class DialogStepSQLitePipeline:
         npc_uid = _safe_text(_event_field(event, "npc_uid", 8, ""))
         event_type = _safe_text(_event_field(event, "event_type", 9, "")).strip().lower()
         text_raw = _safe_text(_event_field(event, "text", 10, ""))
+        map_name = _safe_text(_event_field(event, "map_name", 11, "")).strip()
+        npc_name = _safe_text(_event_field(event, "npc_name", 12, "")).strip()
         if not npc_uid:
             npc_uid = _build_npc_uid(map_id, model_id, agent_id)
+        if not map_name:
+            map_name = _resolve_map_name(map_id)
+        if not npc_name:
+            npc_name = _resolve_npc_name(agent_id)
         return {
             "tick": tick,
             "message_id": message_id,
@@ -869,8 +1130,10 @@ class DialogStepSQLitePipeline:
             "context_dialog_id": context_dialog_id,
             "agent_id": agent_id,
             "map_id": map_id,
+            "map_name": map_name,
             "model_id": model_id,
             "npc_uid": npc_uid,
+            "npc_name": npc_name,
             "event_type": event_type,
             "text_raw": text_raw,
             "text_decoded": text_raw,
@@ -960,7 +1223,9 @@ class DialogStepSQLitePipeline:
             "start_tick": event["tick"],
             "last_tick": event["tick"],
             "map_id": event["map_id"],
+            "map_name": event.get("map_name", "") or _resolve_map_name(int(event["map_id"] or 0)),
             "agent_id": event["agent_id"],
+            "npc_name": event.get("npc_name", "") or _resolve_npc_name(int(event["agent_id"] or 0)),
             "model_id": event["model_id"],
             "npc_uid_instance": npc_uid_instance,
             "npc_uid_archetype": _build_npc_archetype_uid(event["map_id"], event["model_id"]),
@@ -983,7 +1248,9 @@ class DialogStepSQLitePipeline:
             "start_tick": event["tick"],
             "last_tick": event["tick"],
             "map_id": event["map_id"],
+            "map_name": event.get("map_name", "") or _resolve_map_name(int(event["map_id"] or 0)),
             "agent_id": event["agent_id"],
+            "npc_name": event.get("npc_name", "") or _resolve_npc_name(int(event["agent_id"] or 0)),
             "model_id": event["model_id"],
             "npc_uid_instance": npc_uid_instance,
             "npc_uid_archetype": _build_npc_archetype_uid(event["map_id"], event["model_id"]),
@@ -1014,6 +1281,23 @@ class DialogStepSQLitePipeline:
         context_dialog_id = int(event.get("context_dialog_id", 0) or 0)
         if int(step.get("body_dialog_id", 0) or 0) == 0 and context_dialog_id != 0:
             step["body_dialog_id"] = context_dialog_id
+        if int(step.get("map_id", 0) or 0) == 0:
+            step["map_id"] = int(event.get("map_id", 0) or 0)
+        if not _safe_text(step.get("map_name", "")):
+            step["map_name"] = _safe_text(event.get("map_name", "")) or _resolve_map_name(int(event.get("map_id", 0) or 0))
+        if int(step.get("agent_id", 0) or 0) == 0:
+            step["agent_id"] = int(event.get("agent_id", 0) or 0)
+        if not _safe_text(step.get("npc_name", "")):
+            step["npc_name"] = _safe_text(event.get("npc_name", "")) or _resolve_npc_name(int(event.get("agent_id", 0) or 0))
+        if int(step.get("model_id", 0) or 0) == 0:
+            step["model_id"] = int(event.get("model_id", 0) or 0)
+        if not _safe_text(step.get("npc_uid_instance", "")):
+            step["npc_uid_instance"] = self._event_step_key(event)
+        if not _safe_text(step.get("npc_uid_archetype", "")):
+            step["npc_uid_archetype"] = _build_npc_archetype_uid(
+                int(event.get("map_id", 0) or 0),
+                int(event.get("model_id", 0) or 0),
+            )
         dialog_id = int(step.get("body_dialog_id", 0) or 0)
         if dialog_id != 0 and (not _safe_text(step.get("body_text_raw")) or not _safe_text(step.get("body_text_decoded"))):
             cached_raw, cached_decoded = self._cached_body_text_for_dialog(dialog_id)
@@ -1046,8 +1330,12 @@ class DialogStepSQLitePipeline:
             step["body_text_decoded"] = incoming_decoded
         if int(step.get("map_id", 0) or 0) == 0:
             step["map_id"] = int(body_event.get("map_id", 0) or 0)
+        if not _safe_text(step.get("map_name", "")):
+            step["map_name"] = _safe_text(body_event.get("map_name", "")) or _resolve_map_name(int(body_event.get("map_id", 0) or 0))
         if int(step.get("agent_id", 0) or 0) == 0:
             step["agent_id"] = int(body_event.get("agent_id", 0) or 0)
+        if not _safe_text(step.get("npc_name", "")):
+            step["npc_name"] = _safe_text(body_event.get("npc_name", "")) or _resolve_npc_name(int(body_event.get("agent_id", 0) or 0))
         if int(step.get("model_id", 0) or 0) == 0:
             step["model_id"] = int(body_event.get("model_id", 0) or 0)
         if not _safe_text(step.get("npc_uid_instance", "")):
@@ -1136,6 +1424,11 @@ class DialogStepSQLitePipeline:
         body_text_decoded = _safe_text(step.get("body_text_decoded", ""))
         selected_dialog_id = int(step.get("selected_dialog_id", 0) or 0)
         choices = list(step.get("choices", []))
+        map_id = int(step.get("map_id", 0) or 0)
+        agent_id = int(step.get("agent_id", 0) or 0)
+        model_id = int(step.get("model_id", 0) or 0)
+        map_name = _safe_text(step.get("map_name", "")).strip() or _resolve_map_name(map_id)
+        npc_name = _safe_text(step.get("npc_name", "")).strip() or _resolve_npc_name(agent_id)
 
         if body_dialog_id == 0 and body_text_decoded:
             inferred_id = self._infer_dialog_id_from_body_text(body_text_decoded)
@@ -1159,17 +1452,19 @@ class DialogStepSQLitePipeline:
         cursor = conn.execute(
             """
             INSERT INTO dialog_steps (
-                start_tick, end_tick, map_id, agent_id, model_id, npc_uid_instance, npc_uid_archetype,
+                start_tick, end_tick, map_id, map_name, agent_id, npc_name, model_id, npc_uid_instance, npc_uid_archetype,
                 body_dialog_id, body_text_raw, body_text_decoded, selected_dialog_id,
                 selected_source_message_id, finalized_reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(step.get("start_tick", 0) or 0),
                 int(end_tick or step.get("last_tick", 0) or 0),
-                int(step.get("map_id", 0) or 0),
-                int(step.get("agent_id", 0) or 0),
-                int(step.get("model_id", 0) or 0),
+                map_id,
+                map_name,
+                agent_id,
+                npc_name,
+                model_id,
                 _safe_text(step.get("npc_uid_instance", "")),
                 _safe_text(step.get("npc_uid_archetype", "")),
                 body_dialog_id,
@@ -1334,8 +1629,10 @@ class DialogStepSQLitePipeline:
             "context_dialog_id": int(row["context_dialog_id"]),
             "agent_id": int(row["agent_id"]),
             "map_id": int(row["map_id"]),
+            "map_name": _safe_text(row["map_name"]),
             "model_id": int(row["model_id"]),
             "npc_uid": _safe_text(row["npc_uid"]),
+            "npc_name": _safe_text(row["npc_name"]),
             "event_type": _safe_text(row["event_type"]),
             "text_raw": _safe_text(row["text_raw"]),
             "text_decoded": _safe_text(row["text_decoded"]),
@@ -1349,7 +1646,9 @@ class DialogStepSQLitePipeline:
             "message_id": int(row["message_id"]),
             "incoming": bool(row["incoming"]),
             "map_id": int(row["map_id"]),
+            "map_name": _safe_text(row["map_name"]),
             "agent_id": int(row["agent_id"]),
+            "npc_name": _safe_text(row["npc_name"]),
             "model_id": int(row["model_id"]),
             "npc_uid": _safe_text(row["npc_uid"]),
             "dialog_id": int(row["dialog_id"]),
@@ -1364,7 +1663,9 @@ class DialogStepSQLitePipeline:
             "start_tick": int(row["start_tick"]),
             "end_tick": int(row["end_tick"]),
             "map_id": int(row["map_id"]),
+            "map_name": _safe_text(row["map_name"]),
             "agent_id": int(row["agent_id"]),
+            "npc_name": _safe_text(row["npc_name"]),
             "model_id": int(row["model_id"]),
             "npc_uid_instance": _safe_text(row["npc_uid_instance"]),
             "npc_uid_archetype": _safe_text(row["npc_uid_archetype"]),

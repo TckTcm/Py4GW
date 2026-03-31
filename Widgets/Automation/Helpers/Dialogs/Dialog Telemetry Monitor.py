@@ -31,6 +31,8 @@ _TAB_LOGS = "Logs"
 _TAB_DEBUG = "Debug"
 _LOGS_TAB_RAW = "Raw"
 _LOGS_TAB_JOURNAL = "Journal"
+_LOGS_TAB_BAR_ID = "DialogTelemetryLogsTabsV2"
+_DEFAULT_WINDOW_SIZE = (960.0, 720.0)
 _PLAYER_NAME_PLACEHOLDER = "<character name>"
 _REDACTION_BLOCKED_PLACEHOLDER = "<redaction unavailable; text hidden>"
 _REDACTION_BLOCKED_REASON = "player-name redaction unavailable; telemetry text copy/export is blocked"
@@ -85,7 +87,7 @@ class DialogMonitorState:
         self.callback_source_index = 0
         self.selected_step_id = 0
         self.selected_tab = _TAB_LIVE
-        self.selected_logs_tab = _LOGS_TAB_RAW
+        self.selected_logs_tab = _LOGS_TAB_JOURNAL
         self.last_storage_sync_result: Dict[str, int] = {
             "raw_inserted": 0,
             "journal_inserted": 0,
@@ -659,6 +661,44 @@ def _format_raw_log_line(event: Any) -> str:
     return line
 
 
+def _format_map_with_id(map_id: Any, map_name: Any) -> str:
+    resolved_map_id = int(map_id or 0)
+    resolved_map_name = str(map_name or "").strip()
+    if resolved_map_id > 0 and resolved_map_name:
+        return f"{resolved_map_name} ({resolved_map_id})"
+    if resolved_map_id > 0:
+        return f"<unknown> ({resolved_map_id})"
+    return resolved_map_name if resolved_map_name else "<unknown>"
+
+
+def _describe_persisted_row_context(row: Dict[str, Any]) -> tuple[str, str]:
+    map_id = int(row.get("map_id", 0) or 0)
+    map_name = str(row.get("map_name", "") or "")
+    npc_uid = str(row.get("npc_uid_instance", "") or row.get("npc_uid", "") or "")
+    npc_name = str(row.get("npc_name", "") or "").strip() or "<pending>"
+    agent_id = int(row.get("agent_id", 0) or 0)
+
+    map_line = f"map={_format_map_with_id(map_id, map_name)}"
+    npc_line = f"npc={npc_name}"
+    if npc_uid:
+        npc_line += f" [{npc_uid}]"
+    if agent_id:
+        npc_line += f" agent={agent_id}"
+    return map_line, npc_line
+
+
+def _join_non_empty_lines(*parts: Any) -> str:
+    return "\n".join(str(part) for part in parts if str(part or ""))
+
+
+def _logs_tab_item_label(tab_name: str) -> str:
+    if tab_name == _LOGS_TAB_JOURNAL:
+        return "Journal##DialogTelemetryLogsJournalV2"
+    if tab_name == _LOGS_TAB_RAW:
+        return "Raw##DialogTelemetryLogsRawV2"
+    return str(tab_name)
+
+
 def _choice_label(choice) -> str:
     if getattr(choice, "message_decoded", ""):
         return _obfuscate_player_name_text(choice.message_decoded)
@@ -794,17 +834,34 @@ def _get_raw_log_rows(direction: str) -> List[Dict[str, Any]]:
 def _get_callback_journal_rows(direction: str) -> List[Dict[str, Any]]:
     npc_uid = _state.selected_npc_uid or ""
     cache_key = f"callback_journal:{direction}:{npc_uid}:{_state.raw_log_limit}"
+    def _fetch_rows() -> List[Dict[str, Any]]:
+        limit = max(_state.raw_log_limit * 4, 200)
+        rows = list(
+            Dialog.get_persisted_callback_journal(
+                direction=direction,
+                npc_uid=_state.selected_npc_uid,
+                limit=limit,
+                offset=0,
+                sync=False,
+            )
+        )
+        if rows or not _state.selected_npc_uid:
+            return rows
+        return list(
+            Dialog.get_persisted_callback_journal(
+                direction=direction,
+                npc_uid=None,
+                limit=limit,
+                offset=0,
+                sync=False,
+            )
+        )
+
     return list(
         _cached_query(
             cache_key,
             _QUERY_CACHE_TTL_SECONDS,
-            lambda: Dialog.get_persisted_callback_journal(
-                direction=direction,
-                npc_uid=_state.selected_npc_uid,
-                limit=max(_state.raw_log_limit * 4, 200),
-                offset=0,
-                sync=False,
-            ),
+            _fetch_rows,
         )
     )
 
@@ -1121,14 +1178,17 @@ def _draw_history_panel() -> None:
             reason = str(step.get("finalized_reason", "") or "")
             created_at = float(step.get("created_at", 0.0) or 0.0)
             delta = (now - created_at) if created_at > 0 else 0.0
+            map_line, npc_line = _describe_persisted_row_context(step)
             line = (
                 f"[{delta:4.1f}s ago] step#{step_id} "
                 f"body={_format_dialog_id(body_id)} selected={_format_dialog_id(selected_id)} "
                 f"reason={reason}"
             )
-            if needle and needle not in f"{line} {display_body_text}".lower():
+            if needle and needle not in f"{line} {map_line} {npc_line} {display_body_text}".lower():
                 continue
             PyImGui.text_wrapped(line)
+            PyImGui.text_wrapped(map_line)
+            PyImGui.text_wrapped(npc_line)
             if display_body_text:
                 PyImGui.text_wrapped(display_body_text)
             shown += 1
@@ -1199,16 +1259,26 @@ def _draw_raw_logs_panel() -> None:
         shown = 0
         for event in log_rows:
             line = _format_raw_log_line(event)
+            map_line, npc_line = _describe_persisted_row_context(event)
             event_text = str(event.get("text_raw", "") or "") if isinstance(event, dict) else ""
             display_event_text = _obfuscate_player_name_text(event_text)
-            if needle and needle not in f"{line} {display_event_text}".lower():
+            if needle and needle not in f"{line} {map_line} {npc_line} {display_event_text}".lower():
                 continue
             PyImGui.text_wrapped(line)
+            PyImGui.text_wrapped(map_line)
+            PyImGui.text_wrapped(npc_line)
             if display_event_text:
                 PyImGui.text_wrapped(f"text={display_event_text}")
             _same_line()
             if PyImGui.small_button(f"Copy##raw_{_event_field(event, 'id', 7, shown)}"):
-                _copy_text_to_clipboard(line)
+                _copy_text_to_clipboard(
+                    _join_non_empty_lines(
+                        line,
+                        map_line,
+                        npc_line,
+                        f"text={display_event_text}" if display_event_text else "",
+                    )
+                )
             _same_line()
             if PyImGui.small_button(f"CopyJSON##raw_{_event_field(event, 'id', 7, shown)}"):
                 if isinstance(event, dict):
@@ -1266,6 +1336,7 @@ def _draw_callback_journal_panel() -> None:
             display_event_text = _obfuscate_player_name_text(event_text)
             certainty = _dialog_certainty_snapshot(event, event_type=event_type)
             delta = (now - timestamp) if timestamp > 0 else 0.0
+            map_line, npc_line = _describe_persisted_row_context(event)
             line = (
                 f"[{delta:4.1f}s] {event_type} "
                 f"msg=0x{message_id:08X} id={_format_dialog_id(dialog_id)} "
@@ -1273,18 +1344,26 @@ def _draw_callback_journal_panel() -> None:
                 f"[{certainty['short_label']}] agent={agent_id}"
             )
             if needle:
-                haystack = f"{line} {npc_uid} {display_event_text}".lower()
+                haystack = f"{line} {npc_uid} {map_line} {npc_line} {display_event_text}".lower()
                 if needle not in haystack:
                     continue
             PyImGui.text_wrapped(line)
             PyImGui.text_wrapped(certainty["detail"])
-            if npc_uid:
-                PyImGui.text_wrapped(f"npc={npc_uid}")
+            PyImGui.text_wrapped(map_line)
+            PyImGui.text_wrapped(npc_line)
             if display_event_text:
                 PyImGui.text_wrapped(f"text={display_event_text}")
             _same_line()
             if PyImGui.small_button(f"CopyLine##cb_{event_id}_{shown}"):
-                _copy_text_to_clipboard(line)
+                _copy_text_to_clipboard(
+                    _join_non_empty_lines(
+                        line,
+                        certainty["detail"],
+                        map_line,
+                        npc_line,
+                        f"text={display_event_text}" if display_event_text else "",
+                    )
+                )
             _same_line()
             if PyImGui.small_button(f"CopyJSON##cb_{event_id}_{shown}"):
                 _copy_json_to_clipboard(event)
@@ -1312,12 +1391,18 @@ def _draw_ledger_panel() -> None:
                 "count": 0,
                 "last_seen": 0.0,
                 "map_id": int(step.get("map_id", 0) or 0),
+                "map_name": str(step.get("map_name", "") or ""),
                 "model_id": int(step.get("model_id", 0) or 0),
                 "agent_id": int(step.get("agent_id", 0) or 0),
+                "npc_name": str(step.get("npc_name", "") or ""),
             },
         )
         stat["count"] += 1
         stat["last_seen"] = max(float(step.get("created_at", 0.0) or 0.0), stat["last_seen"])
+        if not stat["map_name"] and step.get("map_name"):
+            stat["map_name"] = str(step.get("map_name", "") or "")
+        if not stat["npc_name"] and step.get("npc_name"):
+            stat["npc_name"] = str(step.get("npc_name", "") or "")
 
     npc_uids = sorted(npc_stats.keys(), key=lambda uid: npc_stats[uid]["last_seen"], reverse=True)
     if not npc_uids:
@@ -1330,8 +1415,10 @@ def _draw_ledger_panel() -> None:
     labels = []
     for uid in npc_uids:
         stat = npc_stats[uid]
+        npc_display = stat["npc_name"] if stat["npc_name"] else uid
+        map_display = _format_map_with_id(stat["map_id"], stat["map_name"])
         labels.append(
-            f"{uid} ({stat['count']} steps, map {stat['map_id']}, model {stat['model_id']}, agent {stat['agent_id']})"
+            f"{npc_display} [{uid}] ({stat['count']} steps, {map_display}, model {stat['model_id']}, agent {stat['agent_id']})"
         )
     new_index = PyImGui.combo("NPC##steps", selected_index, labels)
     _state.select_npc_uid(npc_uids[new_index])
@@ -1353,15 +1440,18 @@ def _draw_ledger_panel() -> None:
             body_text = str(step.get("body_text_raw", "") or "")
             display_body_text = _obfuscate_player_name_text(body_text)
             choices = step.get("choices", [])
+            map_line, npc_line = _describe_persisted_row_context(step)
             line = (
                 f"step#{step_id} body={_format_dialog_id(body_id)} "
                 f"selected={_format_dialog_id(selected_id)} choices={len(choices)} reason={reason}"
             )
             if needle:
-                haystack = f"{line} {display_body_text}".lower()
+                haystack = f"{line} {map_line} {npc_line} {display_body_text}".lower()
                 if needle not in haystack:
                     continue
             PyImGui.text_wrapped(line)
+            PyImGui.text_wrapped(map_line)
+            PyImGui.text_wrapped(npc_line)
             created_at = float(step.get("created_at", 0.0) or 0.0)
             if created_at > 0:
                 PyImGui.text(f"age={now - created_at:4.1f}s")
@@ -1382,6 +1472,9 @@ def _draw_ledger_panel() -> None:
         if selected_step:
             PyImGui.separator()
             PyImGui.text(f"Selected Step: {_state.selected_step_id}")
+            map_line, npc_line = _describe_persisted_row_context(selected_step)
+            PyImGui.text_wrapped(map_line)
+            PyImGui.text_wrapped(npc_line)
             body_text = _obfuscate_player_name_text(selected_step.get("body_text_raw", "") or "")
             if body_text:
                 PyImGui.text_wrapped(body_text)
@@ -1609,31 +1702,31 @@ def _draw_recent_tab() -> None:
 
 
 def _draw_logs_tab() -> None:
-    if PyImGui.button("Export Raw"):
-        _export_raw_callbacks()
-    _same_line(6.0)
     if PyImGui.button("Export Journal"):
         _export_callback_journal()
+    _same_line(6.0)
+    if PyImGui.button("Export Raw"):
+        _export_raw_callbacks()
     PyImGui.separator()
 
     if _supports_imgui_tabs():
-        if PyImGui.begin_tab_bar("DialogTelemetryLogsTabs"):
-            if PyImGui.begin_tab_item(_LOGS_TAB_RAW):
-                _state.select_logs_tab(_LOGS_TAB_RAW)
-                _draw_raw_logs_panel()
-                PyImGui.end_tab_item()
-            if PyImGui.begin_tab_item(_LOGS_TAB_JOURNAL):
+        if PyImGui.begin_tab_bar(_LOGS_TAB_BAR_ID):
+            if PyImGui.begin_tab_item(_logs_tab_item_label(_LOGS_TAB_JOURNAL)):
                 _state.select_logs_tab(_LOGS_TAB_JOURNAL)
                 _draw_callback_journal_panel()
+                PyImGui.end_tab_item()
+            if PyImGui.begin_tab_item(_logs_tab_item_label(_LOGS_TAB_RAW)):
+                _state.select_logs_tab(_LOGS_TAB_RAW)
+                _draw_raw_logs_panel()
                 PyImGui.end_tab_item()
             PyImGui.end_tab_bar()
         return
 
-    if PyImGui.button("Raw"):
-        _state.select_logs_tab(_LOGS_TAB_RAW)
-    _same_line(6.0)
     if PyImGui.button("Journal"):
         _state.select_logs_tab(_LOGS_TAB_JOURNAL)
+    _same_line(6.0)
+    if PyImGui.button("Raw"):
+        _state.select_logs_tab(_LOGS_TAB_RAW)
     PyImGui.separator()
     if _state.selected_logs_tab == _LOGS_TAB_JOURNAL:
         _draw_callback_journal_panel()
@@ -1656,9 +1749,26 @@ def _draw_debug_tab(active, choices) -> None:
     _draw_diagnostics_panel(active, choices)
 
 
+def _apply_window_defaults() -> None:
+    setter = getattr(PyImGui, "set_next_window_size", None)
+    if not callable(setter):
+        return
+    cond = getattr(getattr(PyImGui, "ImGuiCond", None), "FirstUseEver", 0)
+    try:
+        setter(_DEFAULT_WINDOW_SIZE, cond)
+    except TypeError:
+        try:
+            setter(_DEFAULT_WINDOW_SIZE[0], _DEFAULT_WINDOW_SIZE[1])
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def draw_widget() -> None:
+    _apply_window_defaults()
     if not Routines.Checks.Map.MapValid():
-        if PyImGui.begin(MODULE_NAME, PyImGui.WindowFlags.AlwaysAutoResize):
+        if PyImGui.begin(MODULE_NAME, PyImGui.WindowFlags.NoFlag):
             PyImGui.text("Map not ready yet.")
         PyImGui.end()
         return
