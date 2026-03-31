@@ -83,24 +83,24 @@ class DialogMonitorState:
         self.raw_log_limit = 120
         self.search_callback_journal = ""
         self.callback_source_index = 0
-        self.selected_turn_id = 0
+        self.selected_step_id = 0
         self.selected_tab = _TAB_LIVE
         self.selected_logs_tab = _LOGS_TAB_RAW
         self.last_storage_sync_result: Dict[str, int] = {
             "raw_inserted": 0,
             "journal_inserted": 0,
-            "turns_finalized": 0,
+            "steps_finalized": 0,
         }
         self.last_prune_result: Dict[str, int] = {
             "removed_raw_callbacks": 0,
             "removed_callback_journal": 0,
-            "removed_dialog_turns": 0,
+            "removed_dialog_steps": 0,
             "removed_dialog_choices": 0,
         }
         self.prune_days = 7.0
         self.prune_max_raw_rows = 50000
         self.prune_max_journal_rows = 50000
-        self.prune_max_turn_rows = 20000
+        self.prune_max_step_rows = 20000
         self.diagnostics_max_issues = 120
         self.last_sync_error = ""
         self.last_file_action_error = ""
@@ -118,7 +118,7 @@ class DialogMonitorState:
         if npc_uid == self.selected_npc_uid:
             return
         self.selected_npc_uid = npc_uid
-        self.selected_turn_id = 0
+        self.selected_step_id = 0
         self.query_cache.invalidate()
 
     def sync_core_storage(self, *, now: Optional[float] = None) -> None:
@@ -138,7 +138,7 @@ class DialogMonitorState:
             self.last_storage_sync_result = {
                 "raw_inserted": 0,
                 "journal_inserted": 0,
-                "turns_finalized": 0,
+                "steps_finalized": 0,
             }
             self.last_sync_error = str(exc)
         self.last_persist_time = current_time
@@ -149,7 +149,7 @@ class DialogMonitorState:
         self.last_selected_dialog_id = 0
         self.last_selected_seen = 0.0
         self.current_npc_uid = ""
-        self.selected_turn_id = 0
+        self.selected_step_id = 0
         self.last_sync_error = ""
         self.last_file_action_error = ""
         self.query_cache.invalidate()
@@ -719,14 +719,14 @@ def _cached_query(key: str, ttl_seconds: float, fetcher: Callable[[], Any]) -> A
     return _state.query_cache.get_or_refresh(key, ttl_seconds=ttl_seconds, fetcher=fetcher)
 
 
-def _get_history_turns() -> List[Dict[str, Any]]:
+def _get_history_steps() -> List[Dict[str, Any]]:
     npc_uid = _state.selected_npc_uid or ""
-    cache_key = f"history_turns:{npc_uid}"
+    cache_key = f"history_steps:{npc_uid}"
     return list(
         _cached_query(
             cache_key,
             _QUERY_CACHE_TTL_SECONDS,
-            lambda: Dialog.get_dialog_turns(
+            lambda: Dialog.get_dialog_steps(
                 npc_uid_instance=_state.selected_npc_uid,
                 limit=_HISTORY_LIMIT,
                 offset=0,
@@ -737,24 +737,24 @@ def _get_history_turns() -> List[Dict[str, Any]]:
     )
 
 
-def _get_turn_catalog() -> List[Dict[str, Any]]:
+def _get_step_catalog() -> List[Dict[str, Any]]:
     return list(
         _cached_query(
-            "turn_catalog",
+            "step_catalog",
             _HEAVY_QUERY_CACHE_TTL_SECONDS,
-            lambda: Dialog.get_dialog_turns(limit=400, include_choices=False, sync=False),
+            lambda: Dialog.get_dialog_steps(limit=400, include_choices=False, sync=False),
         )
     )
 
 
-def _get_selected_npc_turns() -> List[Dict[str, Any]]:
+def _get_selected_npc_steps() -> List[Dict[str, Any]]:
     npc_uid = _state.selected_npc_uid or ""
-    cache_key = f"npc_turns:{npc_uid}"
+    cache_key = f"npc_steps:{npc_uid}"
     return list(
         _cached_query(
             cache_key,
             _QUERY_CACHE_TTL_SECONDS,
-            lambda: Dialog.get_dialog_turns(
+            lambda: Dialog.get_dialog_steps(
                 npc_uid_instance=_state.selected_npc_uid,
                 limit=250,
                 include_choices=True,
@@ -764,14 +764,14 @@ def _get_selected_npc_turns() -> List[Dict[str, Any]]:
     )
 
 
-def _get_selected_turn(turn_id: int) -> Optional[Dict[str, Any]]:
-    if turn_id <= 0:
+def _get_selected_step(step_id: int) -> Optional[Dict[str, Any]]:
+    if step_id <= 0:
         return None
-    cache_key = f"selected_turn:{turn_id}"
+    cache_key = f"selected_step:{step_id}"
     return _cached_query(
         cache_key,
         _QUERY_CACHE_TTL_SECONDS,
-        lambda: Dialog.get_dialog_turn(turn_id, include_choices=True, sync=False),
+        lambda: Dialog.get_dialog_step(step_id, include_choices=True, sync=False),
     )
 
 
@@ -859,16 +859,16 @@ def _copy_all_ids_to_clipboard() -> None:
     }
     if _state.selected_npc_uid:
         query_kwargs["npc_uid_instance"] = _state.selected_npc_uid
-    turns = Dialog.get_dialog_turns(**query_kwargs)
+    steps = Dialog.get_dialog_steps(**query_kwargs)
     all_ids: set[int] = set()
-    for turn in turns:
-        body_id = int(turn.get("body_dialog_id", 0) or 0)
-        selected_id = int(turn.get("selected_dialog_id", 0) or 0)
+    for step in steps:
+        body_id = int(step.get("body_dialog_id", 0) or 0)
+        selected_id = int(step.get("selected_dialog_id", 0) or 0)
         if body_id:
             all_ids.add(body_id)
         if selected_id:
             all_ids.add(selected_id)
-        for choice in turn.get("choices", []):
+        for choice in step.get("choices", []):
             choice_id = int(choice.get("choice_dialog_id", 0) or 0)
             if choice_id:
                 all_ids.add(choice_id)
@@ -922,7 +922,7 @@ def _dump_monitor_snapshot() -> None:
         payload = {
             "generated_at": time.time(),
             "selected_npc_uid": _state.selected_npc_uid,
-            "turns": Dialog.get_dialog_turns(**query_kwargs),
+            "steps": Dialog.get_dialog_steps(**query_kwargs),
             "callback_journal": Dialog.get_persisted_callback_journal(**journal_kwargs),
         }
         _write_obfuscated_json(dump_path, payload)
@@ -989,12 +989,12 @@ def _export_callback_journal() -> None:
         _state.last_file_action_error = str(exc)
 
 
-def _export_dialog_turns() -> None:
+def _export_dialog_steps() -> None:
     try:
         os.makedirs(_EXPORT_DIR, exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(_EXPORT_DIR, f"dialog_turns_{timestamp}.json")
-        turns = Dialog.get_dialog_turns(
+        path = os.path.join(_EXPORT_DIR, f"dialog_steps_{timestamp}.json")
+        steps = Dialog.get_dialog_steps(
             npc_uid_instance=_state.selected_npc_uid,
             limit=12000,
             offset=0,
@@ -1003,7 +1003,7 @@ def _export_dialog_turns() -> None:
         )
         payload = {
             "generated_at": time.time(),
-            "count": len(turns),
+            "count": len(steps),
             "filters": {
                 "map_id": None,
                 "npc_uid_instance": _state.selected_npc_uid,
@@ -1013,7 +1013,7 @@ def _export_dialog_turns() -> None:
                 "limit": 12000,
                 "offset": 0,
             },
-            "turns": turns,
+            "steps": steps,
         }
         _write_obfuscated_json(path, payload)
         _state.last_file_action_error = ""
@@ -1026,7 +1026,7 @@ def _draw_status_messages() -> None:
     PyImGui.text(
         f"sync raw={int(sync_result.get('raw_inserted', 0))} "
         f"journal={int(sync_result.get('journal_inserted', 0))} "
-        f"turns={int(sync_result.get('turns_finalized', 0))}"
+        f"steps={int(sync_result.get('steps_finalized', 0))}"
     )
     privacy_status = _current_privacy_status_message()
     if privacy_status:
@@ -1107,22 +1107,22 @@ def _draw_history_panel() -> None:
         _state.search_history = search
     needle = _state.search_history.lower().strip()
 
-    turns = _get_history_turns()
+    steps = _get_history_steps()
 
     if PyImGui.begin_child("HistoryPanel", (0, 180), True, PyImGui.WindowFlags.NoFlag):
         now = time.time()
         shown = 0
-        for turn in turns:
-            turn_id = int(turn.get("id", 0) or 0)
-            body_id = int(turn.get("body_dialog_id", 0) or 0)
-            selected_id = int(turn.get("selected_dialog_id", 0) or 0)
-            body_text = str(turn.get("body_text_raw", "") or "")
+        for step in steps:
+            step_id = int(step.get("id", 0) or 0)
+            body_id = int(step.get("body_dialog_id", 0) or 0)
+            selected_id = int(step.get("selected_dialog_id", 0) or 0)
+            body_text = str(step.get("body_text_raw", "") or "")
             display_body_text = _obfuscate_player_name_text(body_text)
-            reason = str(turn.get("finalized_reason", "") or "")
-            created_at = float(turn.get("created_at", 0.0) or 0.0)
+            reason = str(step.get("finalized_reason", "") or "")
+            created_at = float(step.get("created_at", 0.0) or 0.0)
             delta = (now - created_at) if created_at > 0 else 0.0
             line = (
-                f"[{delta:4.1f}s ago] turn#{turn_id} "
+                f"[{delta:4.1f}s ago] step#{step_id} "
                 f"body={_format_dialog_id(body_id)} selected={_format_dialog_id(selected_id)} "
                 f"reason={reason}"
             )
@@ -1135,7 +1135,7 @@ def _draw_history_panel() -> None:
             if shown >= _HISTORY_LIMIT:
                 break
         if shown == 0:
-            PyImGui.text("<no turn history>")
+            PyImGui.text("<no step history>")
     PyImGui.end_child()
 
 
@@ -1192,7 +1192,7 @@ def _draw_raw_logs_panel() -> None:
     PyImGui.text(
         f"stored rows={len(log_rows)} (last sync raw={int(sync_result.get('raw_inserted', 0))}, "
         f"journal={int(sync_result.get('journal_inserted', 0))}, "
-        f"finalized={int(sync_result.get('turns_finalized', 0))})"
+        f"finalized={int(sync_result.get('steps_finalized', 0))})"
     )
 
     if PyImGui.begin_child("RawLogsPanel", (0, 340), True, PyImGui.WindowFlags.NoFlag):
@@ -1297,13 +1297,13 @@ def _draw_callback_journal_panel() -> None:
 
 
 def _draw_ledger_panel() -> None:
-    PyImGui.text("Dialog Turns")
+    PyImGui.text("Dialog Steps")
     PyImGui.separator()
 
-    all_turns = _get_turn_catalog()
+    all_steps = _get_step_catalog()
     npc_stats: Dict[str, Dict[str, Any]] = {}
-    for turn in all_turns:
-        uid = str(turn.get("npc_uid_instance", "") or "")
+    for step in all_steps:
+        uid = str(step.get("npc_uid_instance", "") or "")
         if not uid:
             continue
         stat = npc_stats.setdefault(
@@ -1311,17 +1311,17 @@ def _draw_ledger_panel() -> None:
             {
                 "count": 0,
                 "last_seen": 0.0,
-                "map_id": int(turn.get("map_id", 0) or 0),
-                "model_id": int(turn.get("model_id", 0) or 0),
-                "agent_id": int(turn.get("agent_id", 0) or 0),
+                "map_id": int(step.get("map_id", 0) or 0),
+                "model_id": int(step.get("model_id", 0) or 0),
+                "agent_id": int(step.get("agent_id", 0) or 0),
             },
         )
         stat["count"] += 1
-        stat["last_seen"] = max(float(turn.get("created_at", 0.0) or 0.0), stat["last_seen"])
+        stat["last_seen"] = max(float(step.get("created_at", 0.0) or 0.0), stat["last_seen"])
 
     npc_uids = sorted(npc_stats.keys(), key=lambda uid: npc_stats[uid]["last_seen"], reverse=True)
     if not npc_uids:
-        PyImGui.text("No persisted turns yet.")
+        PyImGui.text("No persisted dialog steps yet.")
         return
 
     selected_index = 0
@@ -1331,30 +1331,30 @@ def _draw_ledger_panel() -> None:
     for uid in npc_uids:
         stat = npc_stats[uid]
         labels.append(
-            f"{uid} ({stat['count']} turns, map {stat['map_id']}, model {stat['model_id']}, agent {stat['agent_id']})"
+            f"{uid} ({stat['count']} steps, map {stat['map_id']}, model {stat['model_id']}, agent {stat['agent_id']})"
         )
-    new_index = PyImGui.combo("NPC##turns", selected_index, labels)
+    new_index = PyImGui.combo("NPC##steps", selected_index, labels)
     _state.select_npc_uid(npc_uids[new_index])
 
-    search = PyImGui.input_text("Search##turns", _state.search_ledger, 96)
+    search = PyImGui.input_text("Search##steps", _state.search_ledger, 96)
     if search != _state.search_ledger:
         _state.search_ledger = search
     needle = _state.search_ledger.lower().strip()
 
-    turns = _get_selected_npc_turns()
+    steps = _get_selected_npc_steps()
 
-    if PyImGui.begin_child("TurnsPanel", (0, 230), True, PyImGui.WindowFlags.NoFlag):
+    if PyImGui.begin_child("StepsPanel", (0, 230), True, PyImGui.WindowFlags.NoFlag):
         now = time.time()
-        for turn in turns:
-            turn_id = int(turn.get("id", 0) or 0)
-            body_id = int(turn.get("body_dialog_id", 0) or 0)
-            selected_id = int(turn.get("selected_dialog_id", 0) or 0)
-            reason = str(turn.get("finalized_reason", "") or "")
-            body_text = str(turn.get("body_text_raw", "") or "")
+        for step in steps:
+            step_id = int(step.get("id", 0) or 0)
+            body_id = int(step.get("body_dialog_id", 0) or 0)
+            selected_id = int(step.get("selected_dialog_id", 0) or 0)
+            reason = str(step.get("finalized_reason", "") or "")
+            body_text = str(step.get("body_text_raw", "") or "")
             display_body_text = _obfuscate_player_name_text(body_text)
-            choices = turn.get("choices", [])
+            choices = step.get("choices", [])
             line = (
-                f"turn#{turn_id} body={_format_dialog_id(body_id)} "
+                f"step#{step_id} body={_format_dialog_id(body_id)} "
                 f"selected={_format_dialog_id(selected_id)} choices={len(choices)} reason={reason}"
             )
             if needle:
@@ -1362,30 +1362,30 @@ def _draw_ledger_panel() -> None:
                 if needle not in haystack:
                     continue
             PyImGui.text_wrapped(line)
-            created_at = float(turn.get("created_at", 0.0) or 0.0)
+            created_at = float(step.get("created_at", 0.0) or 0.0)
             if created_at > 0:
                 PyImGui.text(f"age={now - created_at:4.1f}s")
             _same_line()
-            if PyImGui.small_button(f"CopyTurnJSON##{turn_id}"):
-                _copy_json_to_clipboard(turn)
+            if PyImGui.small_button(f"CopyStepJSON##{step_id}"):
+                _copy_json_to_clipboard(step)
             _same_line()
-            if PyImGui.small_button(f"SelectTurn##{turn_id}"):
-                _state.selected_turn_id = turn_id
+            if PyImGui.small_button(f"SelectStep##{step_id}"):
+                _state.selected_step_id = step_id
             if display_body_text:
                 PyImGui.text_wrapped(f"body={display_body_text}")
-        if not turns:
-            PyImGui.text("<no turns for selected npc>")
+        if not steps:
+            PyImGui.text("<no steps for selected npc>")
     PyImGui.end_child()
 
-    if _state.selected_turn_id:
-        selected_turn = _get_selected_turn(_state.selected_turn_id)
-        if selected_turn:
+    if _state.selected_step_id:
+        selected_step = _get_selected_step(_state.selected_step_id)
+        if selected_step:
             PyImGui.separator()
-            PyImGui.text(f"Selected Turn: {_state.selected_turn_id}")
-            body_text = _obfuscate_player_name_text(selected_turn.get("body_text_raw", "") or "")
+            PyImGui.text(f"Selected Step: {_state.selected_step_id}")
+            body_text = _obfuscate_player_name_text(selected_step.get("body_text_raw", "") or "")
             if body_text:
                 PyImGui.text_wrapped(body_text)
-            choice_rows = selected_turn.get("choices", [])
+            choice_rows = selected_step.get("choices", [])
             if choice_rows:
                 PyImGui.text("Choices")
                 for choice in choice_rows:
@@ -1405,7 +1405,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
     _state.prune_days = max(0.0, float(PyImGui.input_float("Prune Age (days)", _state.prune_days)))
     _state.prune_max_raw_rows = max(100, int(PyImGui.input_int("Max Raw Rows", _state.prune_max_raw_rows)))
     _state.prune_max_journal_rows = max(100, int(PyImGui.input_int("Max Journal Rows", _state.prune_max_journal_rows)))
-    _state.prune_max_turn_rows = max(100, int(PyImGui.input_int("Max Turn Rows", _state.prune_max_turn_rows)))
+    _state.prune_max_step_rows = max(100, int(PyImGui.input_int("Max Step Rows", _state.prune_max_step_rows)))
     if PyImGui.button("Apply Age Prune"):
         _state.last_prune_result = Dialog.prune_dialog_logs(older_than_days=_state.prune_days)
         _state.query_cache.invalidate()
@@ -1414,7 +1414,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
         _state.last_prune_result = Dialog.prune_dialog_logs(
             max_raw_rows=_state.prune_max_raw_rows,
             max_journal_rows=_state.prune_max_journal_rows,
-            max_turn_rows=_state.prune_max_turn_rows,
+            max_step_rows=_state.prune_max_step_rows,
         )
         _state.query_cache.invalidate()
     PyImGui.separator()
@@ -1425,7 +1425,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
             "Last prune removed: "
             f"raw={int(prune_result.get('removed_raw_callbacks', 0))}, "
             f"journal={int(prune_result.get('removed_callback_journal', 0))}, "
-            f"turns={int(prune_result.get('removed_dialog_turns', 0))}, "
+            f"steps={int(prune_result.get('removed_dialog_steps', 0))}, "
             f"choices={int(prune_result.get('removed_dialog_choices', 0))}"
         )
         PyImGui.separator()
@@ -1437,7 +1437,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                 "severity": "info",
                 "rule": "live_no_active_dialog",
                 "message": "No active dialog.",
-                "turn_id": 0,
+                "step_id": 0,
                 "dialog_id": 0,
                 "npc_uid": "",
             }
@@ -1450,7 +1450,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                     "severity": "warning",
                     "rule": "live_empty_active_message",
                     "message": "Active dialog has empty body text.",
-                    "turn_id": 0,
+                    "step_id": 0,
                     "dialog_id": active_issue_id,
                     "npc_uid": _state.current_npc_uid,
                 }
@@ -1461,7 +1461,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                     "severity": "info",
                     "rule": "live_no_active_choices",
                     "message": "Active dialog has no outgoing choices.",
-                    "turn_id": 0,
+                    "step_id": 0,
                     "dialog_id": active_issue_id,
                     "npc_uid": _state.current_npc_uid,
                 }
@@ -1473,7 +1473,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                         "severity": "info",
                         "rule": "live_choice_decode_pending",
                         "message": "One or more choice labels are still decoding.",
-                        "turn_id": 0,
+                        "step_id": 0,
                         "dialog_id": active_issue_id,
                         "npc_uid": _state.current_npc_uid,
                     }
@@ -1484,7 +1484,7 @@ def _draw_diagnostics_panel(active, choices) -> None:
                         "severity": "warning",
                         "rule": "live_missing_choice_labels",
                         "message": "Some choices are missing labels.",
-                        "turn_id": 0,
+                        "step_id": 0,
                         "dialog_id": active_issue_id,
                         "npc_uid": _state.current_npc_uid,
                     }
@@ -1517,13 +1517,13 @@ def _draw_diagnostics_panel(active, choices) -> None:
             severity = str(issue.get("severity", "info")).upper()
             rule = str(issue.get("rule", "unknown"))
             message = str(issue.get("message", ""))
-            turn_id = int(issue.get("turn_id", 0) or 0)
+            step_id = int(issue.get("step_id", 0) or 0)
             dialog_id = int(issue.get("dialog_id", 0) or 0)
             npc_uid = str(issue.get("npc_uid", "") or "")
 
             context_parts = []
-            if turn_id:
-                context_parts.append(f"turn#{turn_id}")
+            if step_id:
+                context_parts.append(f"step#{step_id}")
             if dialog_id:
                 context_parts.append(_format_dialog_id(dialog_id))
             if npc_uid:
@@ -1600,8 +1600,8 @@ def _draw_recent_tab() -> None:
     if PyImGui.button("Copy All IDs"):
         _copy_all_ids_to_clipboard()
     _same_line(6.0)
-    if PyImGui.button("Export Turns"):
-        _export_dialog_turns()
+    if PyImGui.button("Export Steps"):
+        _export_dialog_steps()
     PyImGui.separator()
     _draw_history_panel()
     PyImGui.separator()

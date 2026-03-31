@@ -4,7 +4,7 @@ SQLite-backed dialog observability pipeline.
 This module persists:
 1. Raw callback snapshots (from native raw callback logs).
 2. Structured callback journal entries (from native dialog callback journal).
-3. Correlated dialog turns and choices assembled from journal events.
+3. Correlated dialog steps and their choices assembled from journal events.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def _u32_at(data: Sequence[int], offset: int) -> int:
 
 
 def _dialog_raw_hints(message_id: int, w_bytes: Sequence[int]) -> Tuple[int, int, str]:
-    # Return: (dialog_id, agent_id, event_type)
+    # Restep: (dialog_id, agent_id, event_type)
     if message_id == 0x100000A3:  # kDialogButton
         return _u32_at(w_bytes, 8), 0, "recv_choice_raw"
     if message_id == 0x100000A6:  # kDialogBody
@@ -161,13 +161,13 @@ def _build_npc_archetype_uid(map_id: int, model_id: int) -> str:
     return f"{int(map_id)}:{int(model_id)}"
 
 
-class DialogTurnSQLitePipeline:
+class DialogStepSQLitePipeline:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         self._db_path: Optional[str] = None
-        self._turn_timeout_ms = DEFAULT_TIMEOUT_MS
-        self._pending_turns: Dict[str, Dict[str, Any]] = {}
+        self._step_timeout_ms = DEFAULT_TIMEOUT_MS
+        self._pending_steps: Dict[str, Dict[str, Any]] = {}
         self._body_text_to_dialog_id: Dict[str, int] = {}
         self._dialog_id_to_body_text: Dict[int, Tuple[str, str]] = {}
         self._seen_keys: set[str] = set()
@@ -177,11 +177,11 @@ class DialogTurnSQLitePipeline:
         self,
         *,
         db_path: Optional[str] = None,
-        turn_timeout_ms: Optional[int] = None,
+        step_timeout_ms: Optional[int] = None,
     ) -> str:
         with self._lock:
-            if turn_timeout_ms is not None and int(turn_timeout_ms) > 0:
-                self._turn_timeout_ms = int(turn_timeout_ms)
+            if step_timeout_ms is not None and int(step_timeout_ms) > 0:
+                self._step_timeout_ms = int(step_timeout_ms)
             if db_path:
                 resolved = os.path.abspath(str(db_path))
                 if self._conn is not None and self._db_path and resolved != self._db_path:
@@ -206,20 +206,20 @@ class DialogTurnSQLitePipeline:
             conn = self._ensure_connection()
             inserted_raw = 0
             inserted_journal = 0
-            finalized_turns = 0
+            finalized_steps = 0
             latest_tick = 0
             with conn:
                 if raw_events:
                     inserted_raw = self._insert_raw_callbacks(conn, raw_events)
                 if callback_journal:
-                    inserted_journal, finalized_turns, latest_tick = self._insert_callback_journal(conn, callback_journal)
+                    inserted_journal, finalized_steps, latest_tick = self._insert_callback_journal(conn, callback_journal)
                 if latest_tick:
-                    finalized_turns += self._finalize_stale_turns(conn, latest_tick, current_map_id=0)
-                self._repair_persisted_turn_rows(conn)
+                    finalized_steps += self._finalize_stale_steps(conn, latest_tick, current_map_id=0)
+                self._repair_persisted_step_rows(conn)
             return {
                 "raw_inserted": inserted_raw,
                 "journal_inserted": inserted_journal,
-                "turns_finalized": finalized_turns,
+                "steps_finalized": finalized_steps,
             }
 
     def flush_pending(self) -> int:
@@ -227,9 +227,9 @@ class DialogTurnSQLitePipeline:
             conn = self._ensure_connection()
             finalized = 0
             with conn:
-                keys = list(self._pending_turns.keys())
+                keys = list(self._pending_steps.keys())
                 for npc_uid in keys:
-                    if self._finalize_turn(conn, npc_uid, reason="flush", end_tick=0):
+                    if self._finalize_step(conn, npc_uid, reason="flush", end_tick=0):
                         finalized += 1
             return finalized
 
@@ -384,7 +384,7 @@ class DialogTurnSQLitePipeline:
                 cursor = conn.execute(sql, params)
             return int(cursor.rowcount or 0)
 
-    def get_dialog_turns(
+    def get_dialog_steps(
         self,
         *,
         map_id: Optional[int] = None,
@@ -414,14 +414,14 @@ class DialogTurnSQLitePipeline:
             where.append("t.body_dialog_id = ?")
             params.append(int(body_dialog_id))
         if choice_dialog_id is not None:
-            where.append("EXISTS (SELECT 1 FROM dialog_choices c WHERE c.turn_id = t.id AND c.choice_dialog_id = ?)")
+            where.append("EXISTS (SELECT 1 FROM dialog_choices c WHERE c.step_id = t.id AND c.choice_dialog_id = ?)")
             params.append(int(choice_dialog_id))
 
         sql = (
             "SELECT t.id, t.start_tick, t.end_tick, t.map_id, t.agent_id, t.model_id, "
             "t.npc_uid_instance, t.npc_uid_archetype, t.body_dialog_id, t.body_text_raw, "
             "t.body_text_decoded, t.selected_dialog_id, t.selected_source_message_id, "
-            "t.finalized_reason, t.created_at FROM dialog_turns t"
+            "t.finalized_reason, t.created_at FROM dialog_steps t"
         )
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -431,41 +431,41 @@ class DialogTurnSQLitePipeline:
         with self._lock:
             conn = self._ensure_connection()
             rows = conn.execute(sql, params).fetchall()
-            turns = [self._turn_row_to_dict(row) for row in rows]
-            if not include_choices or not turns:
-                return turns
+            steps = [self._step_row_to_dict(row) for row in rows]
+            if not include_choices or not steps:
+                return steps
 
-            turn_ids = [turn["id"] for turn in turns]
-            choices_by_turn = self._get_choices_by_turn_ids(conn, turn_ids)
-            for turn in turns:
-                turn["choices"] = choices_by_turn.get(turn["id"], [])
-            return turns
+            step_ids = [step["id"] for step in steps]
+            choices_by_step = self._get_choices_by_step_ids(conn, step_ids)
+            for step in steps:
+                step["choices"] = choices_by_step.get(step["id"], [])
+            return steps
 
-    def get_dialog_turn(self, turn_id: int, *, include_choices: bool = True) -> Optional[Dict[str, Any]]:
+    def get_dialog_step(self, step_id: int, *, include_choices: bool = True) -> Optional[Dict[str, Any]]:
         with self._lock:
             conn = self._ensure_connection()
             row = conn.execute(
                 "SELECT id, start_tick, end_tick, map_id, agent_id, model_id, "
                 "npc_uid_instance, npc_uid_archetype, body_dialog_id, body_text_raw, "
                 "body_text_decoded, selected_dialog_id, selected_source_message_id, "
-                "finalized_reason, created_at FROM dialog_turns WHERE id = ?",
-                (int(turn_id),),
+                "finalized_reason, created_at FROM dialog_steps WHERE id = ?",
+                (int(step_id),),
             ).fetchone()
             if row is None:
                 return None
-            turn = self._turn_row_to_dict(row)
+            step = self._step_row_to_dict(row)
             if include_choices:
-                turn["choices"] = self.get_dialog_choices(int(turn_id))
-            return turn
+                step["choices"] = self.get_dialog_choices(int(step_id))
+            return step
 
-    def get_dialog_choices(self, turn_id: int) -> List[Dict[str, Any]]:
+    def get_dialog_choices(self, step_id: int) -> List[Dict[str, Any]]:
         with self._lock:
             conn = self._ensure_connection()
             rows = conn.execute(
-                "SELECT id, turn_id, choice_index, choice_dialog_id, choice_text_raw, "
+                "SELECT id, step_id, choice_index, choice_dialog_id, choice_text_raw, "
                 "choice_text_decoded, skill_id, button_icon, decode_pending, selected, source_message_id "
-                "FROM dialog_choices WHERE turn_id = ? ORDER BY choice_index ASC, id ASC",
-                (int(turn_id),),
+                "FROM dialog_choices WHERE step_id = ? ORDER BY choice_index ASC, id ASC",
+                (int(step_id),),
             ).fetchall()
             return [self._choice_row_to_dict(row) for row in rows]
 
@@ -530,7 +530,7 @@ class DialogTurnSQLitePipeline:
         self._write_json(path, payload)
         return len(entries)
 
-    def export_dialog_turns_json(
+    def export_dialog_steps_json(
         self,
         path: str,
         *,
@@ -542,7 +542,7 @@ class DialogTurnSQLitePipeline:
         limit: int = 5000,
         offset: int = 0,
     ) -> int:
-        turns = self.get_dialog_turns(
+        steps = self.get_dialog_steps(
             map_id=map_id,
             npc_uid_instance=npc_uid_instance,
             npc_uid_archetype=npc_uid_archetype,
@@ -554,7 +554,7 @@ class DialogTurnSQLitePipeline:
         )
         payload = {
             "generated_at": time.time(),
-            "count": len(turns),
+            "count": len(steps),
             "filters": {
                 "map_id": map_id,
                 "npc_uid_instance": npc_uid_instance,
@@ -564,22 +564,22 @@ class DialogTurnSQLitePipeline:
                 "limit": int(limit),
                 "offset": int(offset),
             },
-            "turns": turns,
+            "steps": steps,
         }
         self._write_json(path, payload)
-        return len(turns)
+        return len(steps)
 
     def prune_dialog_logs(
         self,
         *,
         max_raw_rows: Optional[int] = None,
         max_journal_rows: Optional[int] = None,
-        max_turn_rows: Optional[int] = None,
+        max_step_rows: Optional[int] = None,
         older_than_days: Optional[float] = None,
     ) -> Dict[str, int]:
         removed_raw = 0
         removed_journal = 0
-        removed_turns = 0
+        removed_steps = 0
         removed_choices = 0
 
         with self._lock:
@@ -589,17 +589,17 @@ class DialogTurnSQLitePipeline:
                     cutoff = float(time.time()) - float(older_than_days) * 86400.0
                     removed_raw += int(conn.execute("DELETE FROM raw_callbacks WHERE ts < ?", (cutoff,)).rowcount or 0)
                     removed_journal += int(conn.execute("DELETE FROM callback_journal WHERE ts < ?", (cutoff,)).rowcount or 0)
-                    old_turn_rows = conn.execute(
-                        "SELECT id FROM dialog_turns WHERE created_at < ? ORDER BY id ASC",
+                    old_step_rows = conn.execute(
+                        "SELECT id FROM dialog_steps WHERE created_at < ? ORDER BY id ASC",
                         (cutoff,),
                     ).fetchall()
-                    old_turn_ids = [int(row[0]) for row in old_turn_rows]
-                    if old_turn_ids:
-                        removed_choices += self._delete_choices_for_turn_ids(conn, old_turn_ids)
-                        removed_turns += int(
+                    old_step_ids = [int(row[0]) for row in old_step_rows]
+                    if old_step_ids:
+                        removed_choices += self._delete_choices_for_step_ids(conn, old_step_ids)
+                        removed_steps += int(
                             conn.execute(
-                                f"DELETE FROM dialog_turns WHERE id IN ({','.join('?' for _ in old_turn_ids)})",
-                                old_turn_ids,
+                                f"DELETE FROM dialog_steps WHERE id IN ({','.join('?' for _ in old_step_ids)})",
+                                old_step_ids,
                             ).rowcount
                             or 0
                         )
@@ -610,13 +610,13 @@ class DialogTurnSQLitePipeline:
                 if max_journal_rows is not None and int(max_journal_rows) >= 0:
                     removed_journal += self._trim_table(conn, "callback_journal", int(max_journal_rows))
 
-                if max_turn_rows is not None and int(max_turn_rows) >= 0:
-                    overflow_ids = self._overflow_ids(conn, "dialog_turns", int(max_turn_rows))
+                if max_step_rows is not None and int(max_step_rows) >= 0:
+                    overflow_ids = self._overflow_ids(conn, "dialog_steps", int(max_step_rows))
                     if overflow_ids:
-                        removed_choices += self._delete_choices_for_turn_ids(conn, overflow_ids)
-                        removed_turns += int(
+                        removed_choices += self._delete_choices_for_step_ids(conn, overflow_ids)
+                        removed_steps += int(
                             conn.execute(
-                                f"DELETE FROM dialog_turns WHERE id IN ({','.join('?' for _ in overflow_ids)})",
+                                f"DELETE FROM dialog_steps WHERE id IN ({','.join('?' for _ in overflow_ids)})",
                                 overflow_ids,
                             ).rowcount
                             or 0
@@ -625,7 +625,7 @@ class DialogTurnSQLitePipeline:
         return {
             "removed_raw_callbacks": removed_raw,
             "removed_callback_journal": removed_journal,
-            "removed_dialog_turns": removed_turns,
+            "removed_dialog_steps": removed_steps,
             "removed_dialog_choices": removed_choices,
         }
 
@@ -690,7 +690,7 @@ class DialogTurnSQLitePipeline:
                 text_decoded TEXT NOT NULL DEFAULT ''
             );
 
-            CREATE TABLE IF NOT EXISTS dialog_turns (
+            CREATE TABLE IF NOT EXISTS dialog_steps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 start_tick INTEGER NOT NULL,
                 end_tick INTEGER NOT NULL DEFAULT 0,
@@ -710,7 +710,7 @@ class DialogTurnSQLitePipeline:
 
             CREATE TABLE IF NOT EXISTS dialog_choices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                turn_id INTEGER NOT NULL,
+                step_id INTEGER NOT NULL,
                 choice_index INTEGER NOT NULL DEFAULT 0,
                 choice_dialog_id INTEGER NOT NULL DEFAULT 0,
                 choice_text_raw TEXT NOT NULL DEFAULT '',
@@ -720,7 +720,7 @@ class DialogTurnSQLitePipeline:
                 decode_pending INTEGER NOT NULL DEFAULT 0,
                 selected INTEGER NOT NULL DEFAULT 0,
                 source_message_id INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(turn_id) REFERENCES dialog_turns(id) ON DELETE CASCADE
+                FOREIGN KEY(step_id) REFERENCES dialog_steps(id) ON DELETE CASCADE
             );
 
             CREATE INDEX IF NOT EXISTS idx_raw_tick ON raw_callbacks(tick);
@@ -733,13 +733,13 @@ class DialogTurnSQLitePipeline:
             CREATE INDEX IF NOT EXISTS idx_journal_npc_uid ON callback_journal(npc_uid);
             CREATE INDEX IF NOT EXISTS idx_journal_event_type ON callback_journal(event_type);
 
-            CREATE INDEX IF NOT EXISTS idx_turns_map ON dialog_turns(map_id);
-            CREATE INDEX IF NOT EXISTS idx_turns_npc_instance ON dialog_turns(npc_uid_instance);
-            CREATE INDEX IF NOT EXISTS idx_turns_npc_archetype ON dialog_turns(npc_uid_archetype);
-            CREATE INDEX IF NOT EXISTS idx_turns_body_dialog_id ON dialog_turns(body_dialog_id);
-            CREATE INDEX IF NOT EXISTS idx_turns_created_at ON dialog_turns(created_at);
+            CREATE INDEX IF NOT EXISTS idx_steps_map ON dialog_steps(map_id);
+            CREATE INDEX IF NOT EXISTS idx_steps_npc_instance ON dialog_steps(npc_uid_instance);
+            CREATE INDEX IF NOT EXISTS idx_steps_npc_archetype ON dialog_steps(npc_uid_archetype);
+            CREATE INDEX IF NOT EXISTS idx_steps_body_dialog_id ON dialog_steps(body_dialog_id);
+            CREATE INDEX IF NOT EXISTS idx_steps_created_at ON dialog_steps(created_at);
 
-            CREATE INDEX IF NOT EXISTS idx_choices_turn ON dialog_choices(turn_id);
+            CREATE INDEX IF NOT EXISTS idx_choices_step ON dialog_choices(step_id);
             CREATE INDEX IF NOT EXISTS idx_choices_dialog_id ON dialog_choices(choice_dialog_id);
             CREATE INDEX IF NOT EXISTS idx_choices_selected ON dialog_choices(selected);
             """
@@ -844,7 +844,7 @@ class DialogTurnSQLitePipeline:
                 continue
             inserted += 1
             self._remember_key(event_key)
-            finalized += self._process_turn_event(conn, normalized)
+            finalized += self._process_step_event(conn, normalized)
         return inserted, finalized, latest_tick
 
     def _normalize_callback_event(self, event: Any) -> Dict[str, Any]:
@@ -876,61 +876,61 @@ class DialogTurnSQLitePipeline:
             "text_decoded": text_raw,
         }
 
-    def _process_turn_event(self, conn: sqlite3.Connection, event: Dict[str, Any]) -> int:
-        finalized = self._finalize_stale_turns(conn, event["tick"], current_map_id=event["map_id"])
+    def _process_step_event(self, conn: sqlite3.Connection, event: Dict[str, Any]) -> int:
+        finalized = self._finalize_stale_steps(conn, event["tick"], current_map_id=event["map_id"])
         event_type = event["event_type"]
-        turn_key = self._event_turn_key(event)
-        if not turn_key:
+        step_key = self._event_step_key(event)
+        if not step_key:
             return finalized
 
         if event_type == "recv_body":
             self._remember_body_text_mapping(event)
-            existing = self._pending_turns.get(turn_key)
+            existing = self._pending_steps.get(step_key)
             if existing is not None:
-                if self._should_hydrate_pending_turn(existing, event):
-                    self._hydrate_pending_turn(existing, event)
+                if self._should_hydrate_pending_step(existing, event):
+                    self._hydrate_pending_step(existing, event)
                     return finalized
-                if self._finalize_turn(conn, turn_key, reason="next_body", end_tick=event["tick"]):
+                if self._finalize_step(conn, step_key, reason="next_body", end_tick=event["tick"]):
                     finalized += 1
-            self._pending_turns[turn_key] = self._new_turn_from_body(event)
+            self._pending_steps[step_key] = self._new_step_from_body(event)
             return finalized
 
         if event_type == "recv_choice":
-            turn = self._pending_turns.get(turn_key)
-            if turn is None:
+            step = self._pending_steps.get(step_key)
+            if step is None:
                 if int(event.get("context_dialog_id", 0) or 0) == 0:
-                    # Ignore contextless bootstrap choices; they create unresolved turns.
+                    # Ignore contextless bootstrap choices; they create unresolved steps.
                     return finalized
-                turn = self._new_turn_from_choice(event)
-                self._pending_turns[turn_key] = turn
-            self._hydrate_turn_from_choice_context(turn, event)
-            self._append_choice(turn, event)
-            turn["last_tick"] = event["tick"]
+                step = self._new_step_from_choice(event)
+                self._pending_steps[step_key] = step
+            self._hydrate_step_from_choice_context(step, event)
+            self._append_choice(step, event)
+            step["last_tick"] = event["tick"]
             return finalized
 
         if event_type == "sent_choice":
-            turn = self._pending_turns.get(turn_key)
-            if turn is None:
+            step = self._pending_steps.get(step_key)
+            if step is None:
                 if int(event.get("context_dialog_id", 0) or 0) == 0:
-                    # Ignore contextless bootstrap sends; wait for a resolvable turn context.
+                    # Ignore contextless bootstrap sends; wait for a resolvable step context.
                     return finalized
-                turn = self._new_turn_from_choice(event)
-                self._pending_turns[turn_key] = turn
-            self._hydrate_turn_from_choice_context(turn, event)
-            turn["selected_dialog_id"] = event["dialog_id"]
-            turn["selected_source_message_id"] = event["message_id"]
-            self._mark_choice_selected(turn, event["dialog_id"], event["message_id"], event["text_decoded"])
-            turn["last_tick"] = event["tick"]
-            if self._finalize_turn(conn, turn_key, reason="sent_choice", end_tick=event["tick"]):
+                step = self._new_step_from_choice(event)
+                self._pending_steps[step_key] = step
+            self._hydrate_step_from_choice_context(step, event)
+            step["selected_dialog_id"] = event["dialog_id"]
+            step["selected_source_message_id"] = event["message_id"]
+            self._mark_choice_selected(step, event["dialog_id"], event["message_id"], event["text_decoded"])
+            step["last_tick"] = event["tick"]
+            if self._finalize_step(conn, step_key, reason="sent_choice", end_tick=event["tick"]):
                 finalized += 1
             return finalized
 
-        turn = self._pending_turns.get(turn_key)
-        if turn is not None:
-            turn["last_tick"] = max(turn.get("last_tick", 0), event["tick"])
+        step = self._pending_steps.get(step_key)
+        if step is not None:
+            step["last_tick"] = max(step.get("last_tick", 0), event["tick"])
         return finalized
 
-    def _event_turn_key(self, event: Dict[str, Any]) -> str:
+    def _event_step_key(self, event: Dict[str, Any]) -> str:
         npc_uid = _safe_text(event.get("npc_uid", "")).strip()
         if npc_uid:
             return npc_uid
@@ -943,13 +943,13 @@ class DialogTurnSQLitePipeline:
             )
         return ""
 
-    def _new_turn_from_body(self, event: Dict[str, Any]) -> Dict[str, Any]:
+    def _new_step_from_body(self, event: Dict[str, Any]) -> Dict[str, Any]:
         body_dialog_id = event["dialog_id"] or event["context_dialog_id"]
         if body_dialog_id == 0:
             inferred = self._infer_dialog_id_from_body_text(event.get("text_decoded", ""))
             if inferred:
                 body_dialog_id = inferred
-        npc_uid_instance = self._event_turn_key(event)
+        npc_uid_instance = self._event_step_key(event)
         body_text_raw = event["text_raw"]
         body_text_decoded = event["text_decoded"]
         if body_dialog_id != 0 and (not body_text_raw or not body_text_decoded):
@@ -972,8 +972,8 @@ class DialogTurnSQLitePipeline:
             "choices": [],
         }
 
-    def _new_turn_from_choice(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        npc_uid_instance = self._event_turn_key(event)
+    def _new_step_from_choice(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        npc_uid_instance = self._event_step_key(event)
         body_dialog_id = event["context_dialog_id"] if event["context_dialog_id"] else 0
         body_text_raw = ""
         body_text_decoded = ""
@@ -995,10 +995,10 @@ class DialogTurnSQLitePipeline:
             "choices": [],
         }
 
-    def _append_choice(self, turn: Dict[str, Any], event: Dict[str, Any]) -> None:
-        turn["choices"].append(
+    def _append_choice(self, step: Dict[str, Any], event: Dict[str, Any]) -> None:
+        step["choices"].append(
             {
-                "choice_index": len(turn["choices"]),
+                "choice_index": len(step["choices"]),
                 "choice_dialog_id": event["dialog_id"],
                 "choice_text_raw": event["text_raw"],
                 "choice_text_decoded": event["text_decoded"],
@@ -1010,22 +1010,22 @@ class DialogTurnSQLitePipeline:
             }
         )
 
-    def _hydrate_turn_from_choice_context(self, turn: Dict[str, Any], event: Dict[str, Any]) -> None:
+    def _hydrate_step_from_choice_context(self, step: Dict[str, Any], event: Dict[str, Any]) -> None:
         context_dialog_id = int(event.get("context_dialog_id", 0) or 0)
-        if int(turn.get("body_dialog_id", 0) or 0) == 0 and context_dialog_id != 0:
-            turn["body_dialog_id"] = context_dialog_id
-        dialog_id = int(turn.get("body_dialog_id", 0) or 0)
-        if dialog_id != 0 and (not _safe_text(turn.get("body_text_raw")) or not _safe_text(turn.get("body_text_decoded"))):
+        if int(step.get("body_dialog_id", 0) or 0) == 0 and context_dialog_id != 0:
+            step["body_dialog_id"] = context_dialog_id
+        dialog_id = int(step.get("body_dialog_id", 0) or 0)
+        if dialog_id != 0 and (not _safe_text(step.get("body_text_raw")) or not _safe_text(step.get("body_text_decoded"))):
             cached_raw, cached_decoded = self._cached_body_text_for_dialog(dialog_id)
-            if cached_raw and not _safe_text(turn.get("body_text_raw")):
-                turn["body_text_raw"] = cached_raw
-            if cached_decoded and not _safe_text(turn.get("body_text_decoded")):
-                turn["body_text_decoded"] = cached_decoded
+            if cached_raw and not _safe_text(step.get("body_text_raw")):
+                step["body_text_raw"] = cached_raw
+            if cached_decoded and not _safe_text(step.get("body_text_decoded")):
+                step["body_text_decoded"] = cached_decoded
 
-    def _should_hydrate_pending_turn(self, turn: Dict[str, Any], body_event: Dict[str, Any]) -> bool:
-        current_body_id = int(turn.get("body_dialog_id", 0) or 0)
+    def _should_hydrate_pending_step(self, step: Dict[str, Any], body_event: Dict[str, Any]) -> bool:
+        current_body_id = int(step.get("body_dialog_id", 0) or 0)
         incoming_body_id = int((body_event.get("dialog_id", 0) or body_event.get("context_dialog_id", 0)) or 0)
-        current_text = _safe_text(turn.get("body_text_decoded", "")).strip()
+        current_text = _safe_text(step.get("body_text_decoded", "")).strip()
         incoming_text = _safe_text(body_event.get("text_decoded", "")).strip()
         if current_body_id == 0 and (incoming_body_id != 0 or incoming_text):
             return True
@@ -1034,30 +1034,30 @@ class DialogTurnSQLitePipeline:
                 return True
         return False
 
-    def _hydrate_pending_turn(self, turn: Dict[str, Any], body_event: Dict[str, Any]) -> None:
+    def _hydrate_pending_step(self, step: Dict[str, Any], body_event: Dict[str, Any]) -> None:
         incoming_body_id = int((body_event.get("dialog_id", 0) or body_event.get("context_dialog_id", 0)) or 0)
         if incoming_body_id != 0:
-            turn["body_dialog_id"] = incoming_body_id
+            step["body_dialog_id"] = incoming_body_id
         incoming_raw = _safe_text(body_event.get("text_raw", ""))
         incoming_decoded = _safe_text(body_event.get("text_decoded", ""))
-        if incoming_raw and not _safe_text(turn.get("body_text_raw", "")):
-            turn["body_text_raw"] = incoming_raw
-        if incoming_decoded and not _safe_text(turn.get("body_text_decoded", "")):
-            turn["body_text_decoded"] = incoming_decoded
-        if int(turn.get("map_id", 0) or 0) == 0:
-            turn["map_id"] = int(body_event.get("map_id", 0) or 0)
-        if int(turn.get("agent_id", 0) or 0) == 0:
-            turn["agent_id"] = int(body_event.get("agent_id", 0) or 0)
-        if int(turn.get("model_id", 0) or 0) == 0:
-            turn["model_id"] = int(body_event.get("model_id", 0) or 0)
-        if not _safe_text(turn.get("npc_uid_instance", "")):
-            turn["npc_uid_instance"] = self._event_turn_key(body_event)
-        if not _safe_text(turn.get("npc_uid_archetype", "")):
-            turn["npc_uid_archetype"] = _build_npc_archetype_uid(
+        if incoming_raw and not _safe_text(step.get("body_text_raw", "")):
+            step["body_text_raw"] = incoming_raw
+        if incoming_decoded and not _safe_text(step.get("body_text_decoded", "")):
+            step["body_text_decoded"] = incoming_decoded
+        if int(step.get("map_id", 0) or 0) == 0:
+            step["map_id"] = int(body_event.get("map_id", 0) or 0)
+        if int(step.get("agent_id", 0) or 0) == 0:
+            step["agent_id"] = int(body_event.get("agent_id", 0) or 0)
+        if int(step.get("model_id", 0) or 0) == 0:
+            step["model_id"] = int(body_event.get("model_id", 0) or 0)
+        if not _safe_text(step.get("npc_uid_instance", "")):
+            step["npc_uid_instance"] = self._event_step_key(body_event)
+        if not _safe_text(step.get("npc_uid_archetype", "")):
+            step["npc_uid_archetype"] = _build_npc_archetype_uid(
                 int(body_event.get("map_id", 0) or 0),
                 int(body_event.get("model_id", 0) or 0),
             )
-        turn["last_tick"] = max(int(turn.get("last_tick", 0) or 0), int(body_event.get("tick", 0) or 0))
+        step["last_tick"] = max(int(step.get("last_tick", 0) or 0), int(body_event.get("tick", 0) or 0))
 
     def _remember_body_text_mapping(self, body_event: Dict[str, Any]) -> None:
         dialog_id = int((body_event.get("dialog_id", 0) or body_event.get("context_dialog_id", 0)) or 0)
@@ -1085,18 +1085,18 @@ class DialogTurnSQLitePipeline:
             return 0
         return int(self._body_text_to_dialog_id.get(key, 0) or 0)
 
-    def _mark_choice_selected(self, turn: Dict[str, Any], dialog_id: int, message_id: int, fallback_text: str) -> None:
+    def _mark_choice_selected(self, step: Dict[str, Any], dialog_id: int, message_id: int, fallback_text: str) -> None:
         matched = False
-        for choice in turn["choices"]:
+        for choice in step["choices"]:
             if int(choice.get("choice_dialog_id", 0)) == int(dialog_id):
                 choice["selected"] = 1
                 choice["source_message_id"] = message_id
                 matched = True
         if matched:
             return
-        turn["choices"].append(
+        step["choices"].append(
             {
-                "choice_index": len(turn["choices"]),
+                "choice_index": len(step["choices"]),
                 "choice_dialog_id": int(dialog_id),
                 "choice_text_raw": _safe_text(fallback_text),
                 "choice_text_decoded": _safe_text(fallback_text),
@@ -1108,49 +1108,49 @@ class DialogTurnSQLitePipeline:
             }
         )
 
-    def _finalize_stale_turns(self, conn: sqlite3.Connection, current_tick: int, current_map_id: int) -> int:
+    def _finalize_stale_steps(self, conn: sqlite3.Connection, current_tick: int, current_map_id: int) -> int:
         finalized = 0
-        keys = list(self._pending_turns.keys())
+        keys = list(self._pending_steps.keys())
         for key in keys:
-            turn = self._pending_turns.get(key)
-            if turn is None:
+            step = self._pending_steps.get(key)
+            if step is None:
                 continue
-            last_tick = int(turn.get("last_tick", 0) or 0)
-            map_id = int(turn.get("map_id", 0) or 0)
+            last_tick = int(step.get("last_tick", 0) or 0)
+            map_id = int(step.get("map_id", 0) or 0)
             if current_map_id and map_id and map_id != current_map_id:
-                if self._finalize_turn(conn, key, reason="map_change", end_tick=current_tick):
+                if self._finalize_step(conn, key, reason="map_change", end_tick=current_tick):
                     finalized += 1
                 continue
-            if current_tick and last_tick and (current_tick - last_tick) > self._turn_timeout_ms:
-                if self._finalize_turn(conn, key, reason="timeout", end_tick=current_tick):
+            if current_tick and last_tick and (current_tick - last_tick) > self._step_timeout_ms:
+                if self._finalize_step(conn, key, reason="timeout", end_tick=current_tick):
                     finalized += 1
         return finalized
 
-    def _finalize_turn(self, conn: sqlite3.Connection, key: str, *, reason: str, end_tick: int) -> bool:
-        turn = self._pending_turns.pop(key, None)
-        if turn is None:
+    def _finalize_step(self, conn: sqlite3.Connection, key: str, *, reason: str, end_tick: int) -> bool:
+        step = self._pending_steps.pop(key, None)
+        if step is None:
             return False
 
-        body_dialog_id = int(turn.get("body_dialog_id", 0) or 0)
-        body_text_raw = _safe_text(turn.get("body_text_raw", ""))
-        body_text_decoded = _safe_text(turn.get("body_text_decoded", ""))
-        selected_dialog_id = int(turn.get("selected_dialog_id", 0) or 0)
-        choices = list(turn.get("choices", []))
+        body_dialog_id = int(step.get("body_dialog_id", 0) or 0)
+        body_text_raw = _safe_text(step.get("body_text_raw", ""))
+        body_text_decoded = _safe_text(step.get("body_text_decoded", ""))
+        selected_dialog_id = int(step.get("selected_dialog_id", 0) or 0)
+        choices = list(step.get("choices", []))
 
         if body_dialog_id == 0 and body_text_decoded:
             inferred_id = self._infer_dialog_id_from_body_text(body_text_decoded)
             if inferred_id:
                 body_dialog_id = inferred_id
-                turn["body_dialog_id"] = inferred_id
+                step["body_dialog_id"] = inferred_id
 
         if body_dialog_id != 0 and (not body_text_raw or not body_text_decoded):
             cached_raw, cached_decoded = self._cached_body_text_for_dialog(body_dialog_id)
             if cached_raw and not body_text_raw:
                 body_text_raw = cached_raw
-                turn["body_text_raw"] = cached_raw
+                step["body_text_raw"] = cached_raw
             if cached_decoded and not body_text_decoded:
                 body_text_decoded = cached_decoded
-                turn["body_text_decoded"] = cached_decoded
+                step["body_text_decoded"] = cached_decoded
 
         # Drop pure bootstrap noise: no body, no text, no choices, no user selection.
         if body_dialog_id == 0 and not body_text_decoded.strip() and not choices and selected_dialog_id == 0:
@@ -1158,43 +1158,43 @@ class DialogTurnSQLitePipeline:
 
         cursor = conn.execute(
             """
-            INSERT INTO dialog_turns (
+            INSERT INTO dialog_steps (
                 start_tick, end_tick, map_id, agent_id, model_id, npc_uid_instance, npc_uid_archetype,
                 body_dialog_id, body_text_raw, body_text_decoded, selected_dialog_id,
                 selected_source_message_id, finalized_reason, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(turn.get("start_tick", 0) or 0),
-                int(end_tick or turn.get("last_tick", 0) or 0),
-                int(turn.get("map_id", 0) or 0),
-                int(turn.get("agent_id", 0) or 0),
-                int(turn.get("model_id", 0) or 0),
-                _safe_text(turn.get("npc_uid_instance", "")),
-                _safe_text(turn.get("npc_uid_archetype", "")),
+                int(step.get("start_tick", 0) or 0),
+                int(end_tick or step.get("last_tick", 0) or 0),
+                int(step.get("map_id", 0) or 0),
+                int(step.get("agent_id", 0) or 0),
+                int(step.get("model_id", 0) or 0),
+                _safe_text(step.get("npc_uid_instance", "")),
+                _safe_text(step.get("npc_uid_archetype", "")),
                 body_dialog_id,
                 body_text_raw,
                 body_text_decoded,
                 selected_dialog_id,
-                int(turn.get("selected_source_message_id", 0) or 0),
+                int(step.get("selected_source_message_id", 0) or 0),
                 _safe_text(reason),
                 float(time.time()),
             ),
         )
-        turn_id = int(cursor.lastrowid or 0)
-        if turn_id <= 0:
+        step_id = int(cursor.lastrowid or 0)
+        if step_id <= 0:
             return False
 
-        for index, choice in enumerate(turn.get("choices", [])):
+        for index, choice in enumerate(step.get("choices", [])):
             conn.execute(
                 """
                 INSERT INTO dialog_choices (
-                    turn_id, choice_index, choice_dialog_id, choice_text_raw, choice_text_decoded,
+                    step_id, choice_index, choice_dialog_id, choice_text_raw, choice_text_decoded,
                     skill_id, button_icon, decode_pending, selected, source_message_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    turn_id,
+                    step_id,
                     int(choice.get("choice_index", index)),
                     int(choice.get("choice_dialog_id", 0) or 0),
                     _safe_text(choice.get("choice_text_raw", "")),
@@ -1213,17 +1213,17 @@ class DialogTurnSQLitePipeline:
             self._dialog_id_to_body_text[body_dialog_id] = (body_text_raw, body_text_decoded)
         return True
 
-    def _repair_persisted_turn_rows(self, conn: sqlite3.Connection) -> None:
+    def _repair_persisted_step_rows(self, conn: sqlite3.Connection) -> None:
         # 1) Backfill missing body dialog ids from exact body text matches for same NPC instance.
         conn.execute(
             """
-            UPDATE dialog_turns
+            UPDATE dialog_steps
             SET body_dialog_id = (
                 SELECT t2.body_dialog_id
-                FROM dialog_turns t2
-                WHERE t2.npc_uid_instance = dialog_turns.npc_uid_instance
+                FROM dialog_steps t2
+                WHERE t2.npc_uid_instance = dialog_steps.npc_uid_instance
                   AND t2.body_dialog_id <> 0
-                  AND t2.body_text_decoded = dialog_turns.body_text_decoded
+                  AND t2.body_text_decoded = dialog_steps.body_text_decoded
                 ORDER BY t2.id DESC
                 LIMIT 1
             )
@@ -1231,10 +1231,10 @@ class DialogTurnSQLitePipeline:
               AND IFNULL(body_text_decoded, '') <> ''
               AND EXISTS (
                 SELECT 1
-                FROM dialog_turns t2
-                WHERE t2.npc_uid_instance = dialog_turns.npc_uid_instance
+                FROM dialog_steps t2
+                WHERE t2.npc_uid_instance = dialog_steps.npc_uid_instance
                   AND t2.body_dialog_id <> 0
-                  AND t2.body_text_decoded = dialog_turns.body_text_decoded
+                  AND t2.body_text_decoded = dialog_steps.body_text_decoded
               )
             """
         )
@@ -1242,14 +1242,14 @@ class DialogTurnSQLitePipeline:
         # 2) Backfill missing body text from same NPC+body dialog rows.
         conn.execute(
             """
-            UPDATE dialog_turns
+            UPDATE dialog_steps
             SET body_text_raw = CASE
                     WHEN IFNULL(body_text_raw, '') <> '' THEN body_text_raw
                     ELSE COALESCE((
                         SELECT t2.body_text_raw
-                        FROM dialog_turns t2
-                        WHERE t2.npc_uid_instance = dialog_turns.npc_uid_instance
-                          AND t2.body_dialog_id = dialog_turns.body_dialog_id
+                        FROM dialog_steps t2
+                        WHERE t2.npc_uid_instance = dialog_steps.npc_uid_instance
+                          AND t2.body_dialog_id = dialog_steps.body_dialog_id
                           AND IFNULL(t2.body_text_raw, '') <> ''
                         ORDER BY t2.id DESC
                         LIMIT 1
@@ -1259,9 +1259,9 @@ class DialogTurnSQLitePipeline:
                     WHEN IFNULL(body_text_decoded, '') <> '' THEN body_text_decoded
                     ELSE COALESCE((
                         SELECT t2.body_text_decoded
-                        FROM dialog_turns t2
-                        WHERE t2.npc_uid_instance = dialog_turns.npc_uid_instance
-                          AND t2.body_dialog_id = dialog_turns.body_dialog_id
+                        FROM dialog_steps t2
+                        WHERE t2.npc_uid_instance = dialog_steps.npc_uid_instance
+                          AND t2.body_dialog_id = dialog_steps.body_dialog_id
                           AND IFNULL(t2.body_text_decoded, '') <> ''
                         ORDER BY t2.id DESC
                         LIMIT 1
@@ -1272,24 +1272,24 @@ class DialogTurnSQLitePipeline:
             """
         )
 
-    def _get_choices_by_turn_ids(self, conn: sqlite3.Connection, turn_ids: Sequence[int]) -> Dict[int, List[Dict[str, Any]]]:
-        if not turn_ids:
+    def _get_choices_by_step_ids(self, conn: sqlite3.Connection, step_ids: Sequence[int]) -> Dict[int, List[Dict[str, Any]]]:
+        if not step_ids:
             return {}
-        placeholders = ",".join("?" for _ in turn_ids)
+        placeholders = ",".join("?" for _ in step_ids)
         rows = conn.execute(
             f"""
-            SELECT id, turn_id, choice_index, choice_dialog_id, choice_text_raw, choice_text_decoded,
+            SELECT id, step_id, choice_index, choice_dialog_id, choice_text_raw, choice_text_decoded,
                    skill_id, button_icon, decode_pending, selected, source_message_id
             FROM dialog_choices
-            WHERE turn_id IN ({placeholders})
-            ORDER BY turn_id ASC, choice_index ASC, id ASC
+            WHERE step_id IN ({placeholders})
+            ORDER BY step_id ASC, choice_index ASC, id ASC
             """,
-            list(turn_ids),
+            list(step_ids),
         ).fetchall()
         out: Dict[int, List[Dict[str, Any]]] = {}
         for row in rows:
             choice = self._choice_row_to_dict(row)
-            out.setdefault(int(choice["turn_id"]), []).append(choice)
+            out.setdefault(int(choice["step_id"]), []).append(choice)
         return out
 
     def _overflow_ids(self, conn: sqlite3.Connection, table_name: str, max_rows: int) -> List[int]:
@@ -1314,12 +1314,12 @@ class DialogTurnSQLitePipeline:
         )
         return int(cursor.rowcount or 0)
 
-    def _delete_choices_for_turn_ids(self, conn: sqlite3.Connection, turn_ids: Sequence[int]) -> int:
-        if not turn_ids:
+    def _delete_choices_for_step_ids(self, conn: sqlite3.Connection, step_ids: Sequence[int]) -> int:
+        if not step_ids:
             return 0
         cursor = conn.execute(
-            f"DELETE FROM dialog_choices WHERE turn_id IN ({','.join('?' for _ in turn_ids)})",
-            list(turn_ids),
+            f"DELETE FROM dialog_choices WHERE step_id IN ({','.join('?' for _ in step_ids)})",
+            list(step_ids),
         )
         return int(cursor.rowcount or 0)
 
@@ -1358,7 +1358,7 @@ class DialogTurnSQLitePipeline:
             "text_raw": _safe_text(row["text_raw"]),
         }
 
-    def _turn_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+    def _step_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {
             "id": int(row["id"]),
             "start_tick": int(row["start_tick"]),
@@ -1380,7 +1380,7 @@ class DialogTurnSQLitePipeline:
     def _choice_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {
             "id": int(row["id"]),
-            "turn_id": int(row["turn_id"]),
+            "step_id": int(row["step_id"]),
             "choice_index": int(row["choice_index"]),
             "choice_dialog_id": int(row["choice_dialog_id"]),
             "choice_text_raw": _safe_text(row["choice_text_raw"]),
@@ -1415,15 +1415,15 @@ class DialogTurnSQLitePipeline:
             self._seen_keys.discard(key)
 
 
-_PIPELINE_INSTANCE: Optional[DialogTurnSQLitePipeline] = None
+_PIPELINE_INSTANCE: Optional[DialogStepSQLitePipeline] = None
 _PIPELINE_INSTANCE_LOCK = threading.Lock()
 
 
-def get_dialog_turn_pipeline() -> DialogTurnSQLitePipeline:
+def get_dialog_step_pipeline() -> DialogStepSQLitePipeline:
     global _PIPELINE_INSTANCE
     if _PIPELINE_INSTANCE is not None:
         return _PIPELINE_INSTANCE
     with _PIPELINE_INSTANCE_LOCK:
         if _PIPELINE_INSTANCE is None:
-            _PIPELINE_INSTANCE = DialogTurnSQLitePipeline()
+            _PIPELINE_INSTANCE = DialogStepSQLitePipeline()
         return _PIPELINE_INSTANCE

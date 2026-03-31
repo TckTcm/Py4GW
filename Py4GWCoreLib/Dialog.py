@@ -1,44 +1,76 @@
 """
 Core Dialog wrapper for the native PyDialog C++ module.
 This module provides dialog access helpers for use by widgets or scripts.
+
+Layering in this module:
+1. Live/native state via `PyDialog` (`get_active_dialog`, buttons, callback journal).
+2. Static dialog metadata and decoded text via `DialogCatalog` when available.
+3. Optional SQLite-backed history via `dialog_step_pipeline`.
+4. Thin module-level wrapper functions at the bottom for ergonomic imports.
+
+When changing behavior, keep those responsibilities separate. Most regressions here come
+from mixing live UI state, static catalog lookups, and persisted history in the same path.
 """
 
 from __future__ import annotations
 
+import importlib
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-try:
-    from .dialog_turn_pipeline import get_dialog_turn_pipeline as _get_dialog_turn_pipeline
-except Exception:
+
+def _import_optional_attr(relative_module: str, absolute_module: str, attr_name: str) -> Any:
+    if __package__:
+        try:
+            module = importlib.import_module(relative_module, __package__)
+            return getattr(module, attr_name)
+        except Exception:
+            pass
     try:
-        from dialog_turn_pipeline import get_dialog_turn_pipeline as _get_dialog_turn_pipeline  # type: ignore
+        module = importlib.import_module(absolute_module)
+        return getattr(module, attr_name)
     except Exception:
-        _get_dialog_turn_pipeline = None
+        return None
 
-MAX_DIALOG_ID = 0x39
+
+def _safe_call(default: Any, callback: Callable[[], Any]) -> Any:
+    try:
+        return callback()
+    except Exception:
+        return default
+
+
+def _call_native_dialog_method(method_name: str, default: Any, *args: Any, **kwargs: Any) -> Any:
+    if PyDialog is None:
+        return default
+    method = getattr(PyDialog.PyDialog, method_name, None)
+    if not callable(method):
+        return default
+    return _safe_call(default, lambda: method(*args, **kwargs))
+
+
+_get_dialog_step_pipeline = _import_optional_attr(
+    ".dialog_step_pipeline",
+    "dialog_step_pipeline",
+    "get_dialog_step_pipeline",
+)
 
 try:
     import PyDialog
-except Exception as exc:  # pragma: no cover - runtime environment specific
+except Exception:  # pragma: no cover - runtime environment specific
     PyDialog = None
-    _PYDIALOG_IMPORT_ERROR = exc
-else:
-    _PYDIALOG_IMPORT_ERROR = None
 
 
+# Text sanitation helpers.
 def _get_dialog_catalog_widget():
-    try:
-        from .DialogCatalog import get_dialog_catalog_widget as _factory
-    except Exception:
-        try:
-            from DialogCatalog import get_dialog_catalog_widget as _factory  # type: ignore
-        except Exception:
-            return None
-    try:
-        return _factory()
-    except Exception:
+    factory = _import_optional_attr(
+        ".DialogCatalog",
+        "DialogCatalog",
+        "get_dialog_catalog_widget",
+    )
+    if not callable(factory):
         return None
+    return _safe_call(None, factory)
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
@@ -80,9 +112,17 @@ def _protect_sentinel_placeholders(text: str) -> tuple[str, dict[str, str]]:
 
 
 def _sanitize_dialog_text(value: Optional[str]) -> str:
+    """
+    Normalize Guild Wars dialog text into a stable display/query form.
+
+    This removes control characters and markup noise while preserving the
+    project-specific sentinel placeholders used by the dialog monitor.
+    """
     if not value:
         return ""
     text = str(value)
+    # Preserve project-specific sentinel placeholders before stripping generic markup so callers
+    # can still distinguish "empty" / "decoding" states after sanitation.
     text, protected_sentinels = _protect_sentinel_placeholders(text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _LBRACKET_TOKEN_RE.sub("[", text)
@@ -130,7 +170,30 @@ def _append_unique_dialog_choice_text(values: List[str], value: Optional[str]) -
         values.append(text)
 
 
+def _coerce_native_list(value: Any) -> List[Any]:
+    """
+    Normalize pybind/native list-like return values into a concrete Python list.
+
+    This keeps runtime behavior defensive and gives static type checkers a stable
+    iterable type for dynamic `getattr`-based native access paths.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
 def _build_active_dialog_npc_filters(active_dialog: Optional["ActiveDialogInfo"]) -> Dict[str, Any]:
+    """
+    Build the current NPC instance/archetype filters for persisted history queries.
+
+    These filters keep history-based dialog matching scoped to the live NPC so
+    reused dialog ids from other actors do not bleed into the current screen.
+    """
     if active_dialog is None:
         return {}
 
@@ -172,6 +235,8 @@ def _build_active_dialog_npc_filters(active_dialog: Optional["ActiveDialogInfo"]
     if map_id <= 0 or model_id <= 0:
         return {}
 
+    # History lookups must stay scoped to the live NPC instance/archetype. Dialog ids are reused
+    # broadly enough that cross-NPC history can otherwise relabel the current visible buttons.
     npc_uid_archetype = f"{map_id}:{model_id}"
     return {
         "npc_uid_instance": f"{npc_uid_archetype}:{agent_id}",
@@ -218,6 +283,7 @@ def _normalize_npc_uid_filter(npc_uid: Optional[str]) -> Optional[str]:
 _DIAG_SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
+# Diagnostics helpers for persisted dialog history.
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -237,7 +303,7 @@ def _build_diag_issue(
     rule: str,
     message: str,
     npc_uid: str = "",
-    turn_id: int = 0,
+    step_id: int = 0,
     dialog_id: int = 0,
     details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -246,27 +312,33 @@ def _build_diag_issue(
         "rule": rule,
         "message": message,
         "npc_uid": npc_uid,
-        "turn_id": int(turn_id),
+        "step_id": int(step_id),
         "dialog_id": int(dialog_id),
         "details": details or {},
     }
 
 
-def _analyze_dialog_turns(
-    turns: List[Dict[str, Any]],
+def _analyze_dialog_steps(
+    steps: List[Dict[str, Any]],
     *,
     max_issues: int = 250,
 ) -> Dict[str, Any]:
+    """
+    Run lightweight consistency checks over persisted dialog history rows.
+
+    The diagnostics are intentionally conservative and meant for monitor/debug
+    surfaces, not for blocking runtime behavior.
+    """
     issues: List[Dict[str, Any]] = []
 
-    for turn in turns:
-        turn_id = _as_int(turn.get("id", 0), 0)
-        npc_uid = _as_text(turn.get("npc_uid_instance", "")).strip()
-        body_dialog_id = _as_int(turn.get("body_dialog_id", 0), 0)
-        selected_dialog_id = _as_int(turn.get("selected_dialog_id", 0), 0)
-        finalized_reason = _as_text(turn.get("finalized_reason", "")).strip().lower()
-        body_text = _as_text(turn.get("body_text_raw", ""))
-        choices = list(turn.get("choices", []) or [])
+    for step in steps:
+        step_id = _as_int(step.get("id", 0), 0)
+        npc_uid = _as_text(step.get("npc_uid_instance", "")).strip()
+        body_dialog_id = _as_int(step.get("body_dialog_id", 0), 0)
+        selected_dialog_id = _as_int(step.get("selected_dialog_id", 0), 0)
+        finalized_reason = _as_text(step.get("finalized_reason", "")).strip().lower()
+        body_text = _as_text(step.get("body_text_raw", ""))
+        choices = list(step.get("choices", []) or [])
 
         if body_dialog_id == 0 and choices:
             issues.append(
@@ -275,7 +347,7 @@ def _analyze_dialog_turns(
                     rule="orphan_choices_without_body",
                     message="Turn has choices but no body dialog id.",
                     npc_uid=npc_uid,
-                    turn_id=turn_id,
+                    step_id=step_id,
                     dialog_id=0,
                     details={"choice_count": len(choices)},
                 )
@@ -288,7 +360,7 @@ def _analyze_dialog_turns(
                     rule="missing_body_text",
                     message="Turn body dialog id is set but body text is empty.",
                     npc_uid=npc_uid,
-                    turn_id=turn_id,
+                    step_id=step_id,
                     dialog_id=body_dialog_id,
                 )
             )
@@ -300,7 +372,7 @@ def _analyze_dialog_turns(
                     rule="timeout_finalization",
                     message="Turn was finalized by timeout.",
                     npc_uid=npc_uid,
-                    turn_id=turn_id,
+                    step_id=step_id,
                     dialog_id=body_dialog_id,
                 )
             )
@@ -316,9 +388,9 @@ def _analyze_dialog_turns(
                 _build_diag_issue(
                     severity="error",
                     rule="selected_choice_not_offered",
-                    message="Selected dialog id is not present in the offered choices for this turn.",
+                    message="Selected dialog id is not present in the offered choices for this step.",
                     npc_uid=npc_uid,
-                    turn_id=turn_id,
+                    step_id=step_id,
                     dialog_id=selected_dialog_id,
                     details={"offered_choice_ids": choice_ids},
                 )
@@ -327,7 +399,7 @@ def _analyze_dialog_turns(
     issues.sort(
         key=lambda issue: (
             _DIAG_SEVERITY_ORDER.get(_as_text(issue.get("severity", "info")).lower(), 99),
-            -_as_int(issue.get("turn_id", 0), 0),
+            -_as_int(issue.get("step_id", 0), 0),
         )
     )
 
@@ -344,7 +416,7 @@ def _analyze_dialog_turns(
     return {
         "summary": summary,
         "issues": issues,
-        "analyzed_turns": len(turns),
+        "analyzed_steps": len(steps),
     }
 
 
@@ -442,6 +514,7 @@ class DialogButtonInfo:
         return f"DialogButtonInfo(dialog_id=0x{self.dialog_id:04x})"
 
 
+# Inline choice extraction helpers.
 def _parse_inline_choice_dialog_id(raw_value: Any) -> int:
     value = str(raw_value or "").strip()
     if not value:
@@ -453,6 +526,12 @@ def _parse_inline_choice_dialog_id(raw_value: Any) -> int:
 
 
 def _extract_inline_dialog_choices_from_text(body_text: Optional[str]) -> List[DialogButtonInfo]:
+    """
+    Extract `<a=...>...</a>` style inline choices from raw dialog body text.
+
+    Some GW dialogs expose choices inline instead of through the native active
+    button list, so this parser acts as the fallback source for those screens.
+    """
     text = str(body_text or "")
     if not text or "<a=" not in text.lower():
         return []
@@ -543,12 +622,18 @@ class DialogCallbackJournalEntry:
 
 
 class DialogWidget:
-    """High-level wrapper around the native PyDialog module."""
+    """
+    High-level wrapper around the native PyDialog module.
+
+    Use this class when you want one object that exposes live dialog state,
+    static dialog metadata, callback journals, and optional persisted history.
+    """
 
     def __init__(self) -> None:
         self._initialized = False
 
     def initialize(self) -> bool:
+        """Initialize the native dialog module if it is available."""
         if PyDialog is None:
             return False
         try:
@@ -560,6 +645,7 @@ class DialogWidget:
             return False
 
     def terminate(self) -> None:
+        """Terminate the native dialog module and clear local initialized state."""
         if PyDialog is None:
             return
         try:
@@ -568,9 +654,12 @@ class DialogWidget:
             self._initialized = False
 
     def get_active_dialog(self) -> Optional[ActiveDialogInfo]:
-        if PyDialog is None:
-            return None
-        native_info = PyDialog.PyDialog.get_active_dialog()
+        """
+        Return the current live dialog body, or `None` when no dialog is active.
+
+        This is the main entry point for live dialog automation.
+        """
+        native_info = _call_native_dialog_method("get_active_dialog", None)
         if native_info is None:
             return None
         if (
@@ -582,19 +671,24 @@ class DialogWidget:
         return ActiveDialogInfo(native_info)
 
     def get_active_dialog_buttons(self) -> List[DialogButtonInfo]:
-        if PyDialog is None:
-            return []
-        native_list = PyDialog.PyDialog.get_active_dialog_buttons()
+        """
+        Return the currently visible dialog buttons for the active screen.
+
+        Falls back to parsing inline body markup when the native button list is
+        empty for dialogs that encode choices directly in the message text.
+        """
+        native_list = _coerce_native_list(_call_native_dialog_method("get_active_dialog_buttons", []))
         buttons = [DialogButtonInfo(item) for item in native_list]
         if buttons:
             return buttons
-        native_active = PyDialog.PyDialog.get_active_dialog()
+        # Some dialogs expose choices inline in the body markup instead of through the native
+        # button list. Falling back here keeps the public API stable for those screens.
+        native_active = _call_native_dialog_method("get_active_dialog", None)
         return extract_inline_dialog_choices_from_active(native_active)
 
     def get_last_selected_dialog_id(self) -> int:
-        if PyDialog is None:
-            return 0
-        return PyDialog.PyDialog.get_last_selected_dialog_id()
+        """Return the most recent dialog id sent through the native dialog API."""
+        return int(_call_native_dialog_method("get_last_selected_dialog_id", 0) or 0)
 
     def _get_dialog_choice_catalog_text(self, dialog_id: int) -> str:
         if int(dialog_id) == 0:
@@ -619,6 +713,12 @@ class DialogWidget:
         active_dialog: Optional[ActiveDialogInfo] = None,
         history_limit: int = 25,
     ) -> List[str]:
+        """
+        Collect historical labels for a choice dialog id from persisted dialog steps.
+
+        This is a recovery helper for live screens whose visible button text is
+        missing or undecoded.
+        """
         if int(dialog_id) == 0:
             return []
 
@@ -637,16 +737,15 @@ class DialogWidget:
             )
             if body_dialog_id != 0:
                 query_kwargs["body_dialog_id"] = body_dialog_id
+            # The active NPC/body filters are what make fallback matching safe enough to use for
+            # automation. Without them, reused dialog ids from another NPC can match incorrectly.
             query_kwargs.update(_build_active_dialog_npc_filters(active_dialog))
 
-        try:
-            turns = self.get_dialog_turns(**query_kwargs)
-        except Exception:
-            return []
+        steps = self.get_dialog_steps(**query_kwargs)
 
         texts: List[str] = []
-        for turn in turns:
-            for choice in list(turn.get("choices", []) or []):
+        for step in steps:
+            for choice in list(step.get("choices", []) or []):
                 if int(choice.get("choice_dialog_id", 0) or 0) != int(dialog_id):
                     continue
                 _append_unique_dialog_choice_text(texts, choice.get("choice_text_decoded", ""))
@@ -654,6 +753,7 @@ class DialogWidget:
         return texts
 
     def get_active_dialog_choice_id_by_text(self, text: Optional[str]) -> int:
+        """Resolve a visible choice by its current on-screen label only."""
         needle = _normalize_dialog_choice_text(text)
         if not needle or not self.is_dialog_active():
             return 0
@@ -672,6 +772,12 @@ class DialogWidget:
         *,
         history_limit: int = 25,
     ) -> int:
+        """
+        Resolve a choice by text using live labels first, then catalog/history fallbacks.
+
+        This is the safer automation helper when some labels are blank, inline,
+        or still waiting for decode status to catch up.
+        """
         needle = _normalize_dialog_choice_text(text)
         if not needle or not self.is_dialog_active():
             return 0
@@ -687,6 +793,12 @@ class DialogWidget:
             if _normalize_dialog_choice_text(_get_dialog_button_label(button)) == needle:
                 return dialog_id
 
+        # Resolution order matters:
+        # 1. live visible labels,
+        # 2. static catalog / decoded dialog text,
+        # 3. persisted history scoped to the current NPC/body.
+        #
+        # The earlier tiers are cheaper and less ambiguous. History is a recovery path only.
         for button in buttons:
             dialog_id = int(getattr(button, "dialog_id", 0) or 0)
             if dialog_id == 0:
@@ -715,6 +827,7 @@ class DialogWidget:
         return 0
 
     def send_active_dialog_choice_by_text(self, text: Optional[str]) -> bool:
+        """Send the live visible choice whose label matches `text`."""
         dialog_id = self.get_active_dialog_choice_id_by_text(text)
         if dialog_id == 0:
             return False
@@ -739,6 +852,7 @@ class DialogWidget:
         *,
         history_limit: int = 25,
     ) -> bool:
+        """Send a choice by text using the fallback resolution path when needed."""
         dialog_id = self.get_active_dialog_choice_id_by_text_with_fallback(
             text,
             history_limit=history_limit,
@@ -761,145 +875,97 @@ class DialogWidget:
             return False
 
     def get_dialog_text_decoded(self, dialog_id: int) -> str:
+        """Return decoded text for a dialog id using the catalog when available."""
         catalog = _get_dialog_catalog_widget()
         if catalog is not None:
             return catalog.get_dialog_text_decoded(dialog_id)
-        if PyDialog is None:
-            return ""
-        return _sanitize_dialog_text(PyDialog.PyDialog.get_dialog_text_decoded(dialog_id))
+        return _sanitize_dialog_text(_call_native_dialog_method("get_dialog_text_decoded", "", dialog_id))
 
     def is_dialog_text_decode_pending(self, dialog_id: int) -> bool:
+        """Return whether a dialog id is still waiting for decoded text."""
         catalog = _get_dialog_catalog_widget()
         if catalog is not None:
             return catalog.is_dialog_text_decode_pending(dialog_id)
-        if PyDialog is None:
-            return False
-        return PyDialog.PyDialog.is_dialog_text_decode_pending(dialog_id)
+        return bool(_call_native_dialog_method("is_dialog_text_decode_pending", False, dialog_id))
 
     def is_dialog_active(self) -> bool:
-        if PyDialog is None:
-            return False
-        return bool(PyDialog.PyDialog.is_dialog_active())
+        """Return whether the game currently reports an active dialog screen."""
+        return bool(_call_native_dialog_method("is_dialog_active", False))
 
     def is_dialog_displayed(self, dialog_id: int) -> bool:
-        if PyDialog is None:
-            return False
-        return PyDialog.PyDialog.is_dialog_displayed(dialog_id)
+        return bool(_call_native_dialog_method("is_dialog_displayed", False, dialog_id))
 
     def get_dialog_text_decode_status(self) -> List[DialogTextDecodedInfo]:
+        """Return decode status rows for dialog ids currently known to the runtime/catalog."""
         catalog = _get_dialog_catalog_widget()
         if catalog is not None:
             return catalog.get_dialog_text_decode_status()
-        if PyDialog is None:
-            return []
-        native_list = PyDialog.PyDialog.get_dialog_text_decode_status()
+        native_list = _coerce_native_list(_call_native_dialog_method("get_dialog_text_decode_status", []))
         return [DialogTextDecodedInfo(item) for item in native_list]
 
     def is_dialog_available(self, dialog_id: int) -> bool:
         catalog = _get_dialog_catalog_widget()
         if catalog is not None:
             return catalog.is_dialog_available(dialog_id)
-        if PyDialog is None:
-            return False
-        return PyDialog.PyDialog.is_dialog_available(dialog_id)
+        return bool(_call_native_dialog_method("is_dialog_available", False, dialog_id))
 
     def get_dialog_info(self, dialog_id: int) -> Optional[DialogInfo]:
+        """Return static metadata for a dialog id, not the live active dialog screen."""
         catalog = _get_dialog_catalog_widget()
         if catalog is not None:
             return catalog.get_dialog_info(dialog_id)
-        if PyDialog is None:
-            return None
-        native_info = PyDialog.PyDialog.get_dialog_info(dialog_id)
+        native_info = _call_native_dialog_method("get_dialog_info", None, dialog_id)
         if native_info is None:
             return None
         return DialogInfo(native_info)
 
     def enumerate_available_dialogs(self) -> List[DialogInfo]:
+        """Enumerate the currently available static dialog catalog entries."""
         catalog = _get_dialog_catalog_widget()
         if catalog is not None:
             return catalog.enumerate_available_dialogs()
-        if PyDialog is None:
-            return []
-        native_list = PyDialog.PyDialog.enumerate_available_dialogs()
+        native_list = _coerce_native_list(_call_native_dialog_method("enumerate_available_dialogs", []))
         return [DialogInfo(item) for item in native_list]
 
     def get_dialog_event_logs(self) -> List:
-        if PyDialog is None:
-            return []
-        return PyDialog.PyDialog.get_dialog_event_logs()
+        return _call_native_dialog_method("get_dialog_event_logs", [])
 
     def get_dialog_event_logs_received(self) -> List:
-        if PyDialog is None:
-            return []
-        return PyDialog.PyDialog.get_dialog_event_logs_received()
+        return _call_native_dialog_method("get_dialog_event_logs_received", [])
 
     def get_dialog_event_logs_sent(self) -> List:
-        if PyDialog is None:
-            return []
-        return PyDialog.PyDialog.get_dialog_event_logs_sent()
+        return _call_native_dialog_method("get_dialog_event_logs_sent", [])
 
     def clear_dialog_event_logs(self) -> None:
-        if PyDialog is None:
-            return
-        PyDialog.PyDialog.clear_dialog_event_logs()
+        _call_native_dialog_method("clear_dialog_event_logs", None)
 
     def clear_dialog_event_logs_received(self) -> None:
-        if PyDialog is None:
-            return
-        PyDialog.PyDialog.clear_dialog_event_logs_received()
+        _call_native_dialog_method("clear_dialog_event_logs_received", None)
 
     def clear_dialog_event_logs_sent(self) -> None:
-        if PyDialog is None:
-            return
-        PyDialog.PyDialog.clear_dialog_event_logs_sent()
+        _call_native_dialog_method("clear_dialog_event_logs_sent", None)
 
     def get_dialog_callback_journal(self) -> List[DialogCallbackJournalEntry]:
-        if PyDialog is None:
-            return []
-        getter = getattr(PyDialog.PyDialog, "get_dialog_callback_journal", None)
-        if not callable(getter):
-            return []
-        native_list = getter()
+        """Return the full structured callback journal exposed by the native layer."""
+        native_list = _coerce_native_list(_call_native_dialog_method("get_dialog_callback_journal", []))
         return [DialogCallbackJournalEntry(item) for item in native_list]
 
     def get_dialog_callback_journal_received(self) -> List[DialogCallbackJournalEntry]:
-        if PyDialog is None:
-            return []
-        getter = getattr(PyDialog.PyDialog, "get_dialog_callback_journal_received", None)
-        if not callable(getter):
-            return []
-        native_list = getter()
+        native_list = _coerce_native_list(_call_native_dialog_method("get_dialog_callback_journal_received", []))
         return [DialogCallbackJournalEntry(item) for item in native_list]
 
     def get_dialog_callback_journal_sent(self) -> List[DialogCallbackJournalEntry]:
-        if PyDialog is None:
-            return []
-        getter = getattr(PyDialog.PyDialog, "get_dialog_callback_journal_sent", None)
-        if not callable(getter):
-            return []
-        native_list = getter()
+        native_list = _coerce_native_list(_call_native_dialog_method("get_dialog_callback_journal_sent", []))
         return [DialogCallbackJournalEntry(item) for item in native_list]
 
     def clear_dialog_callback_journal(self) -> None:
-        if PyDialog is None:
-            return
-        clearer = getattr(PyDialog.PyDialog, "clear_dialog_callback_journal", None)
-        if callable(clearer):
-            clearer()
+        _call_native_dialog_method("clear_dialog_callback_journal", None)
 
     def clear_dialog_callback_journal_received(self) -> None:
-        if PyDialog is None:
-            return
-        clearer = getattr(PyDialog.PyDialog, "clear_dialog_callback_journal_received", None)
-        if callable(clearer):
-            clearer()
+        _call_native_dialog_method("clear_dialog_callback_journal_received", None)
 
     def clear_dialog_callback_journal_sent(self) -> None:
-        if PyDialog is None:
-            return
-        clearer = getattr(PyDialog.PyDialog, "clear_dialog_callback_journal_sent", None)
-        if callable(clearer):
-            clearer()
+        _call_native_dialog_method("clear_dialog_callback_journal_sent", None)
 
     def get_callback_journal(
         self,
@@ -907,6 +973,12 @@ class DialogWidget:
         direction: Optional[str] = "all",
         message_type: Optional[Any] = None,
     ) -> List[DialogCallbackJournalEntry]:
+        """
+        Return filtered callback journal entries from the live native journal buffer.
+
+        Use this when you need recent structured callback events without touching
+        the SQLite-backed persisted history.
+        """
         incoming_filter = _normalize_direction_filter(direction)
         message_id_filter, event_type_filter = _parse_message_type_filter(message_type)
         npc_uid_filter = _normalize_npc_uid_filter(npc_uid)
@@ -935,6 +1007,12 @@ class DialogWidget:
         direction: Optional[str] = "all",
         message_type: Optional[Any] = None,
     ) -> None:
+        """
+        Clear live callback journal entries using the best available native API.
+
+        When filtered clear is unavailable natively, this method falls back to
+        the older coarse clear behavior.
+        """
         incoming_filter = _normalize_direction_filter(direction)
         message_id_filter, event_type_filter = _parse_message_type_filter(message_type)
         npc_uid_filter = _normalize_npc_uid_filter(npc_uid)
@@ -971,36 +1049,54 @@ class DialogWidget:
         else:
             self.clear_dialog_callback_journal()
 
-    def _get_turn_pipeline(self):
-        if _get_dialog_turn_pipeline is None:
+    def _get_step_pipeline(self):
+        """Return the optional SQLite history pipeline instance if it is available."""
+        if not callable(_get_dialog_step_pipeline):
             return None
-        try:
-            return _get_dialog_turn_pipeline()
-        except Exception:
-            return None
+        return _safe_call(None, _get_dialog_step_pipeline)
+
+    def _call_step_pipeline_method(
+        self,
+        method_name: str,
+        *,
+        default: Any,
+        sync: bool = False,
+        sync_include_raw: bool = True,
+        sync_include_callback_journal: bool = True,
+        **kwargs: Any,
+    ) -> Any:
+        pipeline = self._get_step_pipeline()
+        if pipeline is None:
+            return default
+        if sync:
+            self.sync_dialog_storage(
+                include_raw=sync_include_raw,
+                include_callback_journal=sync_include_callback_journal,
+            )
+        method = getattr(pipeline, method_name, None)
+        if not callable(method):
+            return default
+        return _safe_call(default, lambda: method(**kwargs))
 
     def configure_dialog_storage(
         self,
         *,
         db_path: Optional[str] = None,
-        turn_timeout_ms: Optional[int] = None,
+        step_timeout_ms: Optional[int] = None,
     ) -> str:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return ""
-        try:
-            return pipeline.configure(db_path=db_path, turn_timeout_ms=turn_timeout_ms)
-        except Exception:
-            return ""
+        """Configure the SQLite-backed dialog step pipeline and return its DB path."""
+        return str(
+            self._call_step_pipeline_method(
+                "configure",
+                default="",
+                db_path=db_path,
+                step_timeout_ms=step_timeout_ms,
+            )
+        )
 
     def get_dialog_storage_path(self) -> str:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return ""
-        try:
-            return pipeline.get_db_path()
-        except Exception:
-            return ""
+        """Return the configured SQLite database path for persisted dialog history."""
+        return str(self._call_step_pipeline_method("get_db_path", default=""))
 
     def sync_dialog_storage(
         self,
@@ -1008,24 +1104,27 @@ class DialogWidget:
         include_raw: bool = True,
         include_callback_journal: bool = True,
     ) -> Dict[str, int]:
-        pipeline = self._get_turn_pipeline()
+        """
+        Snapshot the live native logs into the SQLite-backed persisted dialog store.
+
+        The returned counters are useful for monitors and maintenance scripts that
+        want to know how many rows were inserted/finalized during the sync.
+        """
+        pipeline = self._get_step_pipeline()
         if pipeline is None:
-            return {"raw_inserted": 0, "journal_inserted": 0, "turns_finalized": 0}
+            return {"raw_inserted": 0, "journal_inserted": 0, "steps_finalized": 0}
+        # Sync is snapshot-based: pull the current native in-memory logs, let the pipeline
+        # deduplicate/finalize them, then query persisted state separately.
         raw_events = self.get_dialog_event_logs() if include_raw else None
         callback_journal = self.get_dialog_callback_journal() if include_callback_journal else None
-        try:
-            return pipeline.sync(raw_events=raw_events, callback_journal=callback_journal)
-        except Exception:
-            return {"raw_inserted": 0, "journal_inserted": 0, "turns_finalized": 0}
+        return _safe_call(
+            {"raw_inserted": 0, "journal_inserted": 0, "steps_finalized": 0},
+            lambda: pipeline.sync(raw_events=raw_events, callback_journal=callback_journal),
+        )
 
     def flush_dialog_storage(self) -> int:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return 0
-        try:
-            return int(pipeline.flush_pending())
-        except Exception:
-            return 0
+        """Force any pending in-memory dialog steps to be finalized into SQLite."""
+        return int(self._call_step_pipeline_method("flush_pending", default=0) or 0)
 
     def get_persisted_raw_callbacks(
         self,
@@ -1036,20 +1135,18 @@ class DialogWidget:
         offset: int = 0,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return []
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return pipeline.get_raw_callbacks(
+        """Query persisted raw callback rows from the SQLite dialog store."""
+        return list(
+            self._call_step_pipeline_method(
+                "get_raw_callbacks",
+                default=[],
+                sync=sync,
                 direction=direction,
                 message_type=message_type,
                 limit=limit,
                 offset=offset,
             )
-        except Exception:
-            return []
+        )
 
     def clear_persisted_raw_callbacks(
         self,
@@ -1057,18 +1154,15 @@ class DialogWidget:
         direction: Optional[str] = "all",
         message_type: Optional[Any] = None,
     ) -> int:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return 0
-        try:
-            return int(
-                pipeline.clear_raw_callbacks(
-                    direction=direction,
-                    message_type=message_type,
-                )
+        return int(
+            self._call_step_pipeline_method(
+                "clear_raw_callbacks",
+                default=0,
+                direction=direction,
+                message_type=message_type,
             )
-        except Exception:
-            return 0
+            or 0
+        )
 
     def get_persisted_callback_journal(
         self,
@@ -1080,21 +1174,19 @@ class DialogWidget:
         offset: int = 0,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return []
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return pipeline.get_callback_journal(
+        """Query persisted structured callback journal rows from SQLite."""
+        return list(
+            self._call_step_pipeline_method(
+                "get_callback_journal",
+                default=[],
+                sync=sync,
                 npc_uid=npc_uid,
                 direction=direction,
                 message_type=message_type,
                 limit=limit,
                 offset=offset,
             )
-        except Exception:
-            return []
+        )
 
     def clear_persisted_callback_journal(
         self,
@@ -1103,21 +1195,18 @@ class DialogWidget:
         direction: Optional[str] = "all",
         message_type: Optional[Any] = None,
     ) -> int:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return 0
-        try:
-            return int(
-                pipeline.clear_callback_journal(
-                    npc_uid=npc_uid,
-                    direction=direction,
-                    message_type=message_type,
-                )
+        return int(
+            self._call_step_pipeline_method(
+                "clear_callback_journal",
+                default=0,
+                npc_uid=npc_uid,
+                direction=direction,
+                message_type=message_type,
             )
-        except Exception:
-            return 0
+            or 0
+        )
 
-    def get_dialog_turns(
+    def get_dialog_steps(
         self,
         *,
         map_id: Optional[int] = None,
@@ -1130,13 +1219,19 @@ class DialogWidget:
         include_choices: bool = True,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return []
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return pipeline.get_dialog_turns(
+        """
+        Query persisted dialog steps from SQLite with optional filtering.
+
+        A dialog step is one body screen plus the offered choices and any choice
+        selected before the next body, timeout, or map change.
+        """
+        # Most callers want fresh persisted history by default. Hot UI paths can pass sync=False
+        # when they already called `sync_dialog_storage()` for the current frame/tick.
+        return list(
+            self._call_step_pipeline_method(
+                "get_dialog_steps",
+                default=[],
+                sync=sync,
                 map_id=map_id,
                 npc_uid_instance=npc_uid_instance,
                 npc_uid_archetype=npc_uid_archetype,
@@ -1146,23 +1241,22 @@ class DialogWidget:
                 offset=offset,
                 include_choices=include_choices,
             )
-        except Exception:
-            return []
+        )
 
-    def get_dialog_turn(
-        self, turn_id: int, *, include_choices: bool = True, sync: bool = True
+    def get_dialog_step(
+        self, step_id: int, *, include_choices: bool = True, sync: bool = True
     ) -> Optional[Dict[str, Any]]:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return None
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return pipeline.get_dialog_turn(turn_id=int(turn_id), include_choices=include_choices)
-        except Exception:
-            return None
+        """Return one persisted dialog step by id."""
+        result = self._call_step_pipeline_method(
+            "get_dialog_step",
+            default=None,
+            sync=sync,
+            step_id=int(step_id),
+            include_choices=include_choices,
+        )
+        return result if isinstance(result, dict) else None
 
-    def get_dialog_turns_by_map(
+    def get_dialog_steps_by_map(
         self,
         map_id: int,
         *,
@@ -1171,7 +1265,7 @@ class DialogWidget:
         include_choices: bool = True,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        return self.get_dialog_turns(
+        return self.get_dialog_steps(
             map_id=int(map_id),
             limit=limit,
             offset=offset,
@@ -1179,7 +1273,7 @@ class DialogWidget:
             sync=sync,
         )
 
-    def get_dialog_turns_by_npc_archetype(
+    def get_dialog_steps_by_npc_archetype(
         self,
         npc_uid_archetype: str,
         *,
@@ -1188,7 +1282,7 @@ class DialogWidget:
         include_choices: bool = True,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        return self.get_dialog_turns(
+        return self.get_dialog_steps(
             npc_uid_archetype=npc_uid_archetype,
             limit=limit,
             offset=offset,
@@ -1196,7 +1290,7 @@ class DialogWidget:
             sync=sync,
         )
 
-    def get_dialog_turns_by_body_dialog_id(
+    def get_dialog_steps_by_body_dialog_id(
         self,
         body_dialog_id: int,
         *,
@@ -1205,7 +1299,7 @@ class DialogWidget:
         include_choices: bool = True,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        return self.get_dialog_turns(
+        return self.get_dialog_steps(
             body_dialog_id=int(body_dialog_id),
             limit=limit,
             offset=offset,
@@ -1213,7 +1307,7 @@ class DialogWidget:
             sync=sync,
         )
 
-    def get_dialog_turns_by_choice_dialog_id(
+    def get_dialog_steps_by_choice_dialog_id(
         self,
         choice_dialog_id: int,
         *,
@@ -1222,7 +1316,7 @@ class DialogWidget:
         include_choices: bool = True,
         sync: bool = True,
     ) -> List[Dict[str, Any]]:
-        return self.get_dialog_turns(
+        return self.get_dialog_steps(
             choice_dialog_id=int(choice_dialog_id),
             limit=limit,
             offset=offset,
@@ -1230,16 +1324,16 @@ class DialogWidget:
             sync=sync,
         )
 
-    def get_dialog_choices(self, turn_id: int, *, sync: bool = True) -> List[Dict[str, Any]]:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return []
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return pipeline.get_dialog_choices(turn_id=int(turn_id))
-        except Exception:
-            return []
+    def get_dialog_choices(self, step_id: int, *, sync: bool = True) -> List[Dict[str, Any]]:
+        """Return the persisted choice rows that belong to a dialog step."""
+        return list(
+            self._call_step_pipeline_method(
+                "get_dialog_choices",
+                default=[],
+                sync=sync,
+                step_id=int(step_id),
+            )
+        )
 
     def export_raw_callbacks_json(
         self,
@@ -1251,23 +1345,19 @@ class DialogWidget:
         offset: int = 0,
         sync: bool = True,
     ) -> int:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return 0
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return int(
-                pipeline.export_raw_callbacks_json(
-                    path=path,
-                    direction=direction,
-                    message_type=message_type,
-                    limit=limit,
-                    offset=offset,
-                )
+        return int(
+            self._call_step_pipeline_method(
+                "export_raw_callbacks_json",
+                default=0,
+                sync=sync,
+                path=path,
+                direction=direction,
+                message_type=message_type,
+                limit=limit,
+                offset=offset,
             )
-        except Exception:
-            return 0
+            or 0
+        )
 
     def export_callback_journal_json(
         self,
@@ -1280,26 +1370,22 @@ class DialogWidget:
         offset: int = 0,
         sync: bool = True,
     ) -> int:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return 0
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return int(
-                pipeline.export_callback_journal_json(
-                    path=path,
-                    npc_uid=npc_uid,
-                    direction=direction,
-                    message_type=message_type,
-                    limit=limit,
-                    offset=offset,
-                )
+        return int(
+            self._call_step_pipeline_method(
+                "export_callback_journal_json",
+                default=0,
+                sync=sync,
+                path=path,
+                npc_uid=npc_uid,
+                direction=direction,
+                message_type=message_type,
+                limit=limit,
+                offset=offset,
             )
-        except Exception:
-            return 0
+            or 0
+        )
 
-    def export_dialog_turns_json(
+    def export_dialog_steps_json(
         self,
         path: str,
         *,
@@ -1312,57 +1398,48 @@ class DialogWidget:
         offset: int = 0,
         sync: bool = True,
     ) -> int:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return 0
-        if sync:
-            self.sync_dialog_storage()
-        try:
-            return int(
-                pipeline.export_dialog_turns_json(
-                    path=path,
-                    map_id=map_id,
-                    npc_uid_instance=npc_uid_instance,
-                    npc_uid_archetype=npc_uid_archetype,
-                    body_dialog_id=body_dialog_id,
-                    choice_dialog_id=choice_dialog_id,
-                    limit=limit,
-                    offset=offset,
-                )
+        """Export persisted dialog steps to JSON and return the exported row count."""
+        return int(
+            self._call_step_pipeline_method(
+                "export_dialog_steps_json",
+                default=0,
+                sync=sync,
+                path=path,
+                map_id=map_id,
+                npc_uid_instance=npc_uid_instance,
+                npc_uid_archetype=npc_uid_archetype,
+                body_dialog_id=body_dialog_id,
+                choice_dialog_id=choice_dialog_id,
+                limit=limit,
+                offset=offset,
             )
-        except Exception:
-            return 0
+            or 0
+        )
 
     def prune_dialog_logs(
         self,
         *,
         max_raw_rows: Optional[int] = None,
         max_journal_rows: Optional[int] = None,
-        max_turn_rows: Optional[int] = None,
+        max_step_rows: Optional[int] = None,
         older_than_days: Optional[float] = None,
     ) -> Dict[str, int]:
-        pipeline = self._get_turn_pipeline()
-        if pipeline is None:
-            return {
-                "removed_raw_callbacks": 0,
-                "removed_callback_journal": 0,
-                "removed_dialog_turns": 0,
-                "removed_dialog_choices": 0,
-            }
-        try:
-            return pipeline.prune_dialog_logs(
+        """Prune persisted raw, journal, and step rows from the SQLite store."""
+        return dict(
+            self._call_step_pipeline_method(
+                "prune_dialog_logs",
+                default={
+                    "removed_raw_callbacks": 0,
+                    "removed_callback_journal": 0,
+                    "removed_dialog_steps": 0,
+                    "removed_dialog_choices": 0,
+                },
                 max_raw_rows=max_raw_rows,
                 max_journal_rows=max_journal_rows,
-                max_turn_rows=max_turn_rows,
+                max_step_rows=max_step_rows,
                 older_than_days=older_than_days,
             )
-        except Exception:
-            return {
-                "removed_raw_callbacks": 0,
-                "removed_callback_journal": 0,
-                "removed_dialog_turns": 0,
-                "removed_dialog_choices": 0,
-            }
+        )
 
     def get_dialog_diagnostics(
         self,
@@ -1377,7 +1454,8 @@ class DialogWidget:
         sync: bool = True,
         max_issues: int = 250,
     ) -> Dict[str, Any]:
-        turns = self.get_dialog_turns(
+        """Run lightweight diagnostics over persisted dialog history rows."""
+        steps = self.get_dialog_steps(
             map_id=map_id,
             npc_uid_instance=npc_uid_instance,
             npc_uid_archetype=npc_uid_archetype,
@@ -1388,14 +1466,17 @@ class DialogWidget:
             include_choices=True,
             sync=sync,
         )
-        return _analyze_dialog_turns(turns, max_issues=max_issues)
+        return _analyze_dialog_steps(steps, max_issues=max_issues)
 
 _dialog_widget_instance: Optional[DialogWidget] = None
 
 
+# Module-level convenience wrappers.
 def get_dialog_widget() -> DialogWidget:
     global _dialog_widget_instance
     if _dialog_widget_instance is None:
+        # Keep a single widget wrapper so module-level helpers share the same lazy-initialized
+        # native/catalog/pipeline access path instead of each call re-building state.
         _dialog_widget_instance = DialogWidget()
     return _dialog_widget_instance
 
@@ -1549,11 +1630,11 @@ def clear_callback_journal(
 def configure_dialog_storage(
     *,
     db_path: Optional[str] = None,
-    turn_timeout_ms: Optional[int] = None,
+    step_timeout_ms: Optional[int] = None,
 ) -> str:
     return get_dialog_widget().configure_dialog_storage(
         db_path=db_path,
-        turn_timeout_ms=turn_timeout_ms,
+        step_timeout_ms=step_timeout_ms,
     )
 
 
@@ -1636,7 +1717,7 @@ def clear_persisted_callback_journal(
     )
 
 
-def get_dialog_turns(
+def get_dialog_steps(
     *,
     map_id: Optional[int] = None,
     npc_uid_instance: Optional[str] = None,
@@ -1648,7 +1729,7 @@ def get_dialog_turns(
     include_choices: bool = True,
     sync: bool = True,
 ) -> List[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_turns(
+    return get_dialog_widget().get_dialog_steps(
         map_id=map_id,
         npc_uid_instance=npc_uid_instance,
         npc_uid_archetype=npc_uid_archetype,
@@ -1661,15 +1742,15 @@ def get_dialog_turns(
     )
 
 
-def get_dialog_turn(turn_id: int, *, include_choices: bool = True, sync: bool = True) -> Optional[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_turn(
-        turn_id=turn_id,
+def get_dialog_step(step_id: int, *, include_choices: bool = True, sync: bool = True) -> Optional[Dict[str, Any]]:
+    return get_dialog_widget().get_dialog_step(
+        step_id=step_id,
         include_choices=include_choices,
         sync=sync,
     )
 
 
-def get_dialog_turns_by_map(
+def get_dialog_steps_by_map(
     map_id: int,
     *,
     limit: int = 200,
@@ -1677,7 +1758,7 @@ def get_dialog_turns_by_map(
     include_choices: bool = True,
     sync: bool = True,
 ) -> List[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_turns_by_map(
+    return get_dialog_widget().get_dialog_steps_by_map(
         map_id=map_id,
         limit=limit,
         offset=offset,
@@ -1686,7 +1767,7 @@ def get_dialog_turns_by_map(
     )
 
 
-def get_dialog_turns_by_npc_archetype(
+def get_dialog_steps_by_npc_archetype(
     npc_uid_archetype: str,
     *,
     limit: int = 200,
@@ -1694,7 +1775,7 @@ def get_dialog_turns_by_npc_archetype(
     include_choices: bool = True,
     sync: bool = True,
 ) -> List[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_turns_by_npc_archetype(
+    return get_dialog_widget().get_dialog_steps_by_npc_archetype(
         npc_uid_archetype=npc_uid_archetype,
         limit=limit,
         offset=offset,
@@ -1703,7 +1784,7 @@ def get_dialog_turns_by_npc_archetype(
     )
 
 
-def get_dialog_turns_by_body_dialog_id(
+def get_dialog_steps_by_body_dialog_id(
     body_dialog_id: int,
     *,
     limit: int = 200,
@@ -1711,7 +1792,7 @@ def get_dialog_turns_by_body_dialog_id(
     include_choices: bool = True,
     sync: bool = True,
 ) -> List[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_turns_by_body_dialog_id(
+    return get_dialog_widget().get_dialog_steps_by_body_dialog_id(
         body_dialog_id=body_dialog_id,
         limit=limit,
         offset=offset,
@@ -1720,7 +1801,7 @@ def get_dialog_turns_by_body_dialog_id(
     )
 
 
-def get_dialog_turns_by_choice_dialog_id(
+def get_dialog_steps_by_choice_dialog_id(
     choice_dialog_id: int,
     *,
     limit: int = 200,
@@ -1728,7 +1809,7 @@ def get_dialog_turns_by_choice_dialog_id(
     include_choices: bool = True,
     sync: bool = True,
 ) -> List[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_turns_by_choice_dialog_id(
+    return get_dialog_widget().get_dialog_steps_by_choice_dialog_id(
         choice_dialog_id=choice_dialog_id,
         limit=limit,
         offset=offset,
@@ -1737,8 +1818,8 @@ def get_dialog_turns_by_choice_dialog_id(
     )
 
 
-def get_dialog_choices(turn_id: int, *, sync: bool = True) -> List[Dict[str, Any]]:
-    return get_dialog_widget().get_dialog_choices(turn_id=turn_id, sync=sync)
+def get_dialog_choices(step_id: int, *, sync: bool = True) -> List[Dict[str, Any]]:
+    return get_dialog_widget().get_dialog_choices(step_id=step_id, sync=sync)
 
 
 def export_raw_callbacks_json(
@@ -1781,7 +1862,7 @@ def export_callback_journal_json(
     )
 
 
-def export_dialog_turns_json(
+def export_dialog_steps_json(
     path: str,
     *,
     map_id: Optional[int] = None,
@@ -1793,7 +1874,7 @@ def export_dialog_turns_json(
     offset: int = 0,
     sync: bool = True,
 ) -> int:
-    return get_dialog_widget().export_dialog_turns_json(
+    return get_dialog_widget().export_dialog_steps_json(
         path=path,
         map_id=map_id,
         npc_uid_instance=npc_uid_instance,
@@ -1810,13 +1891,13 @@ def prune_dialog_logs(
     *,
     max_raw_rows: Optional[int] = None,
     max_journal_rows: Optional[int] = None,
-    max_turn_rows: Optional[int] = None,
+    max_step_rows: Optional[int] = None,
     older_than_days: Optional[float] = None,
 ) -> Dict[str, int]:
     return get_dialog_widget().prune_dialog_logs(
         max_raw_rows=max_raw_rows,
         max_journal_rows=max_journal_rows,
-        max_turn_rows=max_turn_rows,
+        max_step_rows=max_step_rows,
         older_than_days=older_than_days,
     )
 
