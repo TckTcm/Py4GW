@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional
 import Py4GW
 from Py4GWCoreLib import Routines, PyImGui, Map, Agent, Dialog, Player
 
-MODULE_NAME = "Dialog Telemetry Monitor"
+MODULE_NAME = "Dialog Monitor"
 
 __widget__ = {
     "enabled": False,
@@ -18,7 +18,7 @@ __widget__ = {
 _ROOT_DIRECTORY = Py4GW.Console.get_projects_path()
 _CONFIG_DIR = os.path.join(_ROOT_DIRECTORY, "Widgets", "Config")
 _EXPORT_DIR = os.path.join(_ROOT_DIRECTORY, "Widgets", "Data", "Dialog", "Exports")
-_DUMP_PREFIX = "DialogTelemetryMonitor_dump_"
+_DUMP_PREFIX = "DialogMonitor_dump_"
 
 _HISTORY_LIMIT = 140
 _INLINE_CHOICE_RE = re.compile(r"<a\s*=\s*([^>]+)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
@@ -31,7 +31,7 @@ _TAB_LOGS = "Logs"
 _TAB_DEBUG = "Debug"
 _LOGS_TAB_RAW = "Raw"
 _LOGS_TAB_JOURNAL = "Journal"
-_LOGS_TAB_BAR_ID = "DialogTelemetryLogsTabsV2"
+_LOGS_TAB_BAR_ID = "DialogMonitorLogsTabsV2"
 _DEFAULT_WINDOW_SIZE = (960.0, 720.0)
 _PLAYER_NAME_PLACEHOLDER = "<character name>"
 _REDACTION_BLOCKED_PLACEHOLDER = "<redaction unavailable; text hidden>"
@@ -693,9 +693,9 @@ def _join_non_empty_lines(*parts: Any) -> str:
 
 def _logs_tab_item_label(tab_name: str) -> str:
     if tab_name == _LOGS_TAB_JOURNAL:
-        return "Journal##DialogTelemetryLogsJournalV2"
+        return "Journal##DialogMonitorLogsJournalV2"
     if tab_name == _LOGS_TAB_RAW:
-        return "Raw##DialogTelemetryLogsRawV2"
+        return "Raw##DialogMonitorLogsRawV2"
     return str(tab_name)
 
 
@@ -1672,7 +1672,7 @@ def _draw_live_tab(active, dialog_active: bool) -> None:
     _draw_live_status_strip(active, dialog_active)
     PyImGui.separator()
 
-    if PyImGui.begin_table("DialogTelemetryLiveLayout", 2, PyImGui.TableFlags.Resizable):
+    if PyImGui.begin_table("DialogMonitorLiveLayout", 2, PyImGui.TableFlags.Resizable):
         PyImGui.table_setup_column("Body", PyImGui.TableColumnFlags.WidthStretch, 0)
         PyImGui.table_setup_column("Choices", PyImGui.TableColumnFlags.WidthStretch, 0)
         PyImGui.table_next_row()
@@ -1790,7 +1790,7 @@ def draw_widget() -> None:
         PyImGui.separator()
 
         if _supports_imgui_tabs():
-            if PyImGui.begin_tab_bar("DialogTelemetryTabs"):
+            if PyImGui.begin_tab_bar("DialogMonitorTabs"):
                 if PyImGui.begin_tab_item(_TAB_LIVE):
                     _state.select_tab(_TAB_LIVE)
                     _draw_live_tab(_state.current_active, dialog_active)
