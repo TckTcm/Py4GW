@@ -56,6 +56,22 @@ _WEAPON_RANGE           = Range.Longbow
 def _dist(x1: float, y1: float, x2: float, y2: float) -> float:
     return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
 
+def _average_agent_xy(agent_ids, get_xy_fn=None):
+    if not agent_ids:
+        return None
+
+    if get_xy_fn is None:
+        get_xy_fn = Agent.GetXY
+
+    total_x = 0.0
+    total_y = 0.0
+    for agent_id in agent_ids:
+        x, y = get_xy_fn(agent_id)
+        total_x += x
+        total_y += y
+    count = float(len(agent_ids))
+    return (total_x / count, total_y / count)
+
 def _escape_point(me_x: float, me_y: float, threat_x: float, threat_y: float, dist: float, rotation: int = 0, debug_fn=None):
     """Return a point 'dist' away from threat, in the direction away from it.
 
@@ -129,6 +145,23 @@ def _nearest_from(array, origin_x: float, origin_y: float, max_dist: float = 0) 
             best_id   = eid
     return best_id
 
+def _farthest_from(array, origin_x: float, origin_y: float, max_dist: float = 0) -> int:
+    """Return the ID of the farthest agent in *array* from (origin_x, origin_y).
+
+    Optionally restricted to agents within max_dist. Returns 0 if the array is
+    empty or no agent falls within the requested range.
+    """
+    best_id   = 0
+    best_dist = float("-inf")
+    for eid in array:
+        ex, ey = Agent.GetXY(eid)
+        d = _dist(origin_x, origin_y, ex, ey)
+        if max_dist != 0 and d > max_dist:
+            continue
+        if d > best_dist:
+            best_dist = d
+            best_id   = eid
+    return best_id
 
 # ── Build class ───────────────────────────────────────────────────────────────
 
@@ -380,9 +413,12 @@ class KeiranThackerayEOTN(BuildMgr):
             if spirit_id == 0 and len(enemies_agro) > 4 and now - self.last_movement_run >= 1.0:
                 if self.debug:
                     Py4GW.Console.Log("Avoidance", f"Overwhelmed Trigger - {len(enemies_agro)} Enemies", Py4GW.Console.MessageType.Warning)
-                avg_x = sum(Agent.GetXY(eid)[0] for eid in enemies_far) / len(enemies_far)
-                avg_y = sum(Agent.GetXY(eid)[1] for eid in enemies_far) / len(enemies_far)
-                ex_x, ex_y = _escape_point(player_x, player_y, avg_x, avg_y, 300, debug_fn=self.debug_fn)
+                average_enemy_xy = _average_agent_xy(enemies_agro)
+                if average_enemy_xy is None:
+                    yield
+                    return
+                avg_x, avg_y = average_enemy_xy
+                ex_x, ex_y = _escape_point(me_x, me_y, avg_x, avg_y, 300, debug_fn=self.debug_fn)
                 ActionQueueManager().ResetAllQueues()
                 self.last_movement_run  = now
                 self.combat_approach_at = 0.0
@@ -450,9 +486,12 @@ class KeiranThackerayEOTN(BuildMgr):
             if enemies_agro and len(enemies_close) > 1 and now - self.last_movement_run >= 1.0:
                 if self.debug:
                     Py4GW.Console.Log("Avoidance", f"Melee Swarm Trigger", Py4GW.Console.MessageType.Warning)
-                avg_x = sum(Agent.GetXY(eid)[0] for eid in enemies_agro) / len(enemies_agro)
-                avg_y = sum(Agent.GetXY(eid)[1] for eid in enemies_agro) / len(enemies_agro)
-                ex_x, ex_y = _escape_point(player_x, player_y, avg_x, avg_y, 300, debug_fn=self.debug_fn)
+                average_enemy_xy = _average_agent_xy(enemies_agro)
+                if average_enemy_xy is None:
+                    yield
+                    return
+                avg_x, avg_y = average_enemy_xy
+                ex_x, ex_y = _escape_point(me_x, me_y, avg_x, avg_y, 300, debug_fn=self.debug_fn)
                 ActionQueueManager().ResetAllQueues()
                 self.last_movement_run  = now
                 self.combat_approach_at = 0.0
