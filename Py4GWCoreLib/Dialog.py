@@ -1568,7 +1568,3 @@ def get_dialog_diagnostics(
         sync=sync,
         max_issues=max_issues,
     )
-<<<<<<< HEAD
-=======
-
->>>>>>> 59bc33e4 (Create dialog-only branch without SkillAccept bridge)
