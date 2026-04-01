@@ -16,6 +16,27 @@ except Exception:
     except Exception:
         _get_dialog_turn_pipeline = None
 
+try:
+    from .SkillAccept import (
+        PendingSkillDebugEvent,
+        PendingSkillFrameEvent,
+        PendingSkillInfo,
+        get_skill_accept_widget as _get_skill_accept_widget,
+    )
+except Exception:
+    try:
+        from SkillAccept import (  # type: ignore
+            PendingSkillDebugEvent,
+            PendingSkillFrameEvent,
+            PendingSkillInfo,
+            get_skill_accept_widget as _get_skill_accept_widget,
+        )
+    except Exception:
+        _get_skill_accept_widget = None
+        PendingSkillInfo = Any
+        PendingSkillDebugEvent = Any
+        PendingSkillFrameEvent = Any
+
 MAX_DIALOG_ID = 0x39
 
 try:
@@ -25,6 +46,20 @@ except Exception as exc:  # pragma: no cover - runtime environment specific
     _PYDIALOG_IMPORT_ERROR = exc
 else:
     _PYDIALOG_IMPORT_ERROR = None
+
+
+def _get_dialog_catalog_widget():
+    try:
+        from .DialogCatalog import get_dialog_catalog_widget as _factory
+    except Exception:
+        try:
+            from DialogCatalog import get_dialog_catalog_widget as _factory  # type: ignore
+        except Exception:
+            return None
+    try:
+        return _factory()
+    except Exception:
+        return None
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
@@ -40,6 +75,7 @@ _MISSING_SPACE_NUM_ALPHA_RE = re.compile(r"(\d{2,})([A-Za-z])")
 _MISSING_SPACE_CAMEL_RE = re.compile(r"([a-z])([A-Z])")
 _MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
+_INLINE_CHOICE_RE = re.compile(r"<a\s*=\s*([^>]+)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
 _SENTINEL_CANONICAL = {
     "<empty>": "<empty>",
     "<no label>": "<no label>",
@@ -289,16 +325,26 @@ class DialogInfo:
 class ActiveDialogInfo:
     """Python wrapper for native ActiveDialogInfo struct."""
 
-    def __init__(self, native_active_dialog=None, *, dialog_id: int = 0, agent_id: int = 0, message: str = ""):
+    def __init__(
+        self,
+        native_active_dialog=None,
+        *,
+        dialog_id: int = 0,
+        agent_id: int = 0,
+        message: str = "",
+        raw_message: str = "",
+    ):
         if native_active_dialog is not None:
             self.native = native_active_dialog
             self.dialog_id = native_active_dialog.dialog_id
             self.agent_id = native_active_dialog.agent_id
-            self.message = _sanitize_dialog_text(native_active_dialog.message)
+            self.raw_message = str(getattr(native_active_dialog, "message", "") or "")
+            self.message = _sanitize_dialog_text(self.raw_message)
         else:
             self.native = None
             self.dialog_id = dialog_id
             self.agent_id = agent_id
+            self.raw_message = str(raw_message or message or "")
             self.message = _sanitize_dialog_text(message)
 
     def __repr__(self) -> str:
@@ -313,7 +359,6 @@ class DialogButtonInfo:
         native_button_info=None,
         *,
         dialog_id: int = 0,
-        skill_id: int = 0,
         button_icon: int = 0,
         message: str = "",
         message_decoded: str = "",
@@ -322,7 +367,6 @@ class DialogButtonInfo:
         if native_button_info is not None:
             self.native = native_button_info
             self.dialog_id = native_button_info.dialog_id
-            self.skill_id = native_button_info.skill_id
             self.button_icon = native_button_info.button_icon
             self.message = _sanitize_dialog_text(native_button_info.message)
             self.message_decoded = _sanitize_dialog_text(native_button_info.message_decoded)
@@ -330,14 +374,82 @@ class DialogButtonInfo:
         else:
             self.native = None
             self.dialog_id = dialog_id
-            self.skill_id = skill_id
             self.button_icon = button_icon
             self.message = _sanitize_dialog_text(message)
             self.message_decoded = _sanitize_dialog_text(message_decoded)
             self.message_decode_pending = message_decode_pending
 
     def __repr__(self) -> str:
-        return f"DialogButtonInfo(dialog_id=0x{self.dialog_id:04x}, skill_id={self.skill_id})"
+        return f"DialogButtonInfo(dialog_id=0x{self.dialog_id:04x})"
+
+
+def _parse_inline_choice_dialog_id(raw_value: Any) -> int:
+    value = str(raw_value or "").strip()
+    if not value:
+        return 0
+    try:
+        return int(value, 0)
+    except Exception:
+        return 0
+
+
+def _extract_inline_dialog_choices_from_text(body_text: Optional[str]) -> List[DialogButtonInfo]:
+    text = str(body_text or "")
+    if not text or "<a=" not in text.lower():
+        return []
+
+    choices: List[DialogButtonInfo] = []
+    seen: set[tuple[int, str]] = set()
+    for match in _INLINE_CHOICE_RE.finditer(text):
+        dialog_id = _parse_inline_choice_dialog_id(match.group(1))
+        if dialog_id == 0:
+            continue
+        label = _sanitize_dialog_text(match.group(2))
+        if not label:
+            label = "<empty>"
+        dedupe_key = (dialog_id, label)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        choices.append(
+            DialogButtonInfo(
+                dialog_id=dialog_id,
+                message=label,
+                message_decoded=label,
+                message_decode_pending=False,
+            )
+        )
+    return choices
+
+
+def extract_inline_dialog_choices_from_text(body_text: Optional[str]) -> List[DialogButtonInfo]:
+    """Parse inline GW dialog anchors like `<a=1>...</a>` from raw body text."""
+    return _extract_inline_dialog_choices_from_text(body_text)
+
+
+def _extract_raw_active_dialog_message(active_dialog: Any) -> str:
+    if active_dialog is None:
+        return ""
+
+    raw_message = getattr(active_dialog, "raw_message", None)
+    if raw_message is not None:
+        return str(raw_message or "")
+
+    native_dialog = getattr(active_dialog, "native", None)
+    if native_dialog is not None:
+        native_message = getattr(native_dialog, "message", None)
+        if native_message is not None:
+            return str(native_message or "")
+
+    message = getattr(active_dialog, "message", None)
+    if message is not None:
+        return str(message or "")
+    return ""
+
+
+def extract_inline_dialog_choices_from_active(active_dialog: Any) -> List[DialogButtonInfo]:
+    """Parse inline choices from either a wrapped ActiveDialogInfo or raw native active dialog object."""
+    return _extract_inline_dialog_choices_from_text(_extract_raw_active_dialog_message(active_dialog))
 
 
 class DialogTextDecodedInfo:
@@ -348,43 +460,6 @@ class DialogTextDecodedInfo:
         self.dialog_id = native_info.dialog_id
         self.text = _sanitize_dialog_text(native_info.text)
         self.pending = native_info.pending
-
-
-class PendingSkillInfo:
-    """Python wrapper for native PendingSkillInfo struct."""
-
-    def __init__(self, native_info):
-        self.native = native_info
-        self.skill_id = native_info.skill_id
-        self.copy_id = native_info.copy_id
-        self.ref_count = native_info.ref_count
-
-
-class PendingSkillDebugEvent:
-    """Python wrapper for pending skill hook debug event."""
-
-    def __init__(self, native_info):
-        self.native = native_info
-        self.owner_id = native_info.owner_id
-        self.skill_id = native_info.skill_id
-        self.copy_id = native_info.copy_id
-        self.added = native_info.added
-
-
-class PendingSkillFrameEvent:
-    """Python wrapper for pending skill frame UI debug event."""
-
-    def __init__(self, native_info):
-        self.native = native_info
-        self.source = native_info.source
-        self.message_id = native_info.message_id
-        self.wparam_ptr = native_info.wparam_ptr
-        self.lparam_ptr = native_info.lparam_ptr
-        self.w0 = native_info.w0
-        self.w1 = native_info.w1
-        self.w2 = native_info.w2
-        self.w3 = native_info.w3
-        self.w4 = native_info.w4
 
 
 class DialogCallbackJournalEntry:
@@ -445,7 +520,11 @@ class DialogWidget:
         if PyDialog is None:
             return []
         native_list = PyDialog.PyDialog.get_active_dialog_buttons()
-        return [DialogButtonInfo(item) for item in native_list]
+        buttons = [DialogButtonInfo(item) for item in native_list]
+        if buttons:
+            return buttons
+        native_active = PyDialog.PyDialog.get_active_dialog()
+        return extract_inline_dialog_choices_from_active(native_active)
 
     def get_last_selected_dialog_id(self) -> int:
         if PyDialog is None:
@@ -453,11 +532,17 @@ class DialogWidget:
         return PyDialog.PyDialog.get_last_selected_dialog_id()
 
     def get_dialog_text_decoded(self, dialog_id: int) -> str:
+        catalog = _get_dialog_catalog_widget()
+        if catalog is not None:
+            return catalog.get_dialog_text_decoded(dialog_id)
         if PyDialog is None:
             return ""
         return _sanitize_dialog_text(PyDialog.PyDialog.get_dialog_text_decoded(dialog_id))
 
     def is_dialog_text_decode_pending(self, dialog_id: int) -> bool:
+        catalog = _get_dialog_catalog_widget()
+        if catalog is not None:
+            return catalog.is_dialog_text_decode_pending(dialog_id)
         if PyDialog is None:
             return False
         return PyDialog.PyDialog.is_dialog_text_decode_pending(dialog_id)
@@ -473,45 +558,54 @@ class DialogWidget:
         return PyDialog.PyDialog.is_dialog_displayed(dialog_id)
 
     def get_dialog_text_decode_status(self) -> List[DialogTextDecodedInfo]:
+        catalog = _get_dialog_catalog_widget()
+        if catalog is not None:
+            return catalog.get_dialog_text_decode_status()
         if PyDialog is None:
             return []
         native_list = PyDialog.PyDialog.get_dialog_text_decode_status()
         return [DialogTextDecodedInfo(item) for item in native_list]
 
     def is_dialog_available(self, dialog_id: int) -> bool:
+        catalog = _get_dialog_catalog_widget()
+        if catalog is not None:
+            return catalog.is_dialog_available(dialog_id)
         if PyDialog is None:
             return False
         return PyDialog.PyDialog.is_dialog_available(dialog_id)
 
     def get_dialog_info(self, dialog_id: int) -> Optional[DialogInfo]:
+        catalog = _get_dialog_catalog_widget()
+        if catalog is not None:
+            return catalog.get_dialog_info(dialog_id)
         if PyDialog is None:
             return None
         native_info = PyDialog.PyDialog.get_dialog_info(dialog_id)
         return DialogInfo(native_info)
 
     def enumerate_available_dialogs(self) -> List[DialogInfo]:
+        catalog = _get_dialog_catalog_widget()
+        if catalog is not None:
+            return catalog.enumerate_available_dialogs()
         if PyDialog is None:
             return []
         native_list = PyDialog.PyDialog.enumerate_available_dialogs()
         return [DialogInfo(item) for item in native_list]
 
     def get_pending_skills(self, agent_id: int = 0) -> List[PendingSkillInfo]:
-        if PyDialog is None:
+        if _get_skill_accept_widget is None:
             return []
-        native_list = PyDialog.PyDialog.get_pending_skills(agent_id)
-        return [PendingSkillInfo(item) for item in native_list]
+        return _get_skill_accept_widget().get_pending_skills(agent_id)
 
     def get_pending_skill_debug_event(self) -> Optional[PendingSkillDebugEvent]:
-        if PyDialog is None:
+        if _get_skill_accept_widget is None:
             return None
-        native_info = PyDialog.PyDialog.get_pending_skill_debug_event()
-        return PendingSkillDebugEvent(native_info)
+        return _get_skill_accept_widget().get_pending_skill_debug_event()
 
     def get_pending_skill_frame_events(self) -> List[PendingSkillFrameEvent]:
-        if PyDialog is None:
+        if _get_skill_accept_widget is None:
             return []
-        native_list = PyDialog.PyDialog.get_pending_skill_frame_events()
-        return [PendingSkillFrameEvent(item) for item in native_list]
+        return _get_skill_accept_widget().get_pending_skill_frame_events()
 
     def get_dialog_event_logs(self) -> List:
         if PyDialog is None:
@@ -1081,14 +1175,14 @@ class DialogWidget:
         return _analyze_dialog_turns(turns, max_issues=max_issues)
 
     def accept_offered_skill(self, skill_id: int) -> bool:
-        if PyDialog is None:
+        if _get_skill_accept_widget is None:
             return False
-        return bool(PyDialog.PyDialog.accept_offered_skill(skill_id))
+        return bool(_get_skill_accept_widget().accept_offered_skill(skill_id))
 
     def accept_offered_skill_replace(self, skill_id: int, slot_index: int, copy_id: Optional[int] = None) -> bool:
-        if PyDialog is None:
+        if _get_skill_accept_widget is None:
             return False
-        return bool(PyDialog.PyDialog.accept_offered_skill_replace(skill_id, slot_index, copy_id))
+        return bool(_get_skill_accept_widget().accept_offered_skill_replace(skill_id, slot_index, copy_id))
 
 
 _dialog_widget_instance: Optional[DialogWidget] = None

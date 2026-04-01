@@ -112,6 +112,8 @@ Known modules/surfaces include:
 - `Camera`
 - `CombatEvents`
 - `Context`
+- `Dialog`
+- `DialogCatalog`
 - `DXOverlay`
 - `Effect`
 - `ImGui`
@@ -125,6 +127,7 @@ Known modules/surfaces include:
 - `Player`
 - `Quest`
 - `Skill`
+- `SkillAccept`
 - `Skillbar`
 - `UIManager`
 
@@ -253,6 +256,24 @@ Known modules/surfaces include:
     - chat history requests
     - chat command / chat / whisper / fake-chat methods
   - These active operations are not simple direct writes; they are routed through the action-queue infrastructure, so `Player` should also be treated as an important queued local-action entry point.
+
+#### Dialog and NPC Interaction
+
+- `Dialog`
+  - The primary live dialog-state and dialog-observability surface.
+  - It owns the active dialog/body view, current dialog choices, last selected dialog id, raw callback logs, callback journal access, turn-oriented analysis helpers, and dialog-storage synchronization helpers.
+  - It also owns project-facing dialog text sanitation and inline choice extraction for body text containing embedded anchor tags such as `<a=...>...</a>`.
+  - It should be treated as the runtime-facing dialog interaction layer for NPC dialog flows and related observability.
+
+- `DialogCatalog`
+  - Static dialog metadata and text lookup surface over the native dialog catalog module.
+  - It owns dialog availability checks, static dialog info lookup, dialog enumeration, decoded dialog text lookup, and decode-status/cache helpers.
+  - It should be treated as the static dialog reference/catalog layer, separate from the live runtime `Dialog` state surface.
+
+- `SkillAccept`
+  - Pending skill-offer and skill-acceptance surface over the native skill-accept module.
+  - It owns pending skill listing, pending skill debug/frame-event inspection, and the active acceptance flows for accepting or replacing an offered skill.
+  - It should be treated as a separate runtime interaction surface for skill-offer UI flows, even when higher-level wrappers delegate to it through `Dialog`.
 
 #### Inventory and Trade Systems
 
