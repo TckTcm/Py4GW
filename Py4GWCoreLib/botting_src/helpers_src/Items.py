@@ -253,9 +253,9 @@ class _Items:
                 log=False,
             )
             yield from Routines.Yield.wait(250)
-            yield from _yield_from_ui_helper("open_all_bags", "_open_all_bags")
+            yield from self.parent.helpers.UI.iter_open_all_bags()
             yield from Routines.Yield.wait(125)
-            yield from _yield_from_ui_helper("bag_item_double_click", "_bag_item_double_click", Bags.Backpack, 0)
+            yield from self.parent.helpers.UI.iter_bag_item_double_click(Bags.Backpack, 0)
             if _bag_is_populated():
                 return True
         else:
