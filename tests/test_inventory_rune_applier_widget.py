@@ -114,14 +114,30 @@ class FakeItemArray:
 
 class FakeHeroes:
     selected_agent_id = 0
+    heroes = []
+    names = {}
 
     @classmethod
     def reset(cls):
         cls.selected_agent_id = 0
+        cls.heroes = []
+        cls.names = {}
 
     @classmethod
     def GetInventorySelectedAgentID(cls):
         return cls.selected_agent_id
+
+    @classmethod
+    def GetNameByAgentID(cls, agent_id):
+        return cls.names.get(agent_id, "")
+
+
+class FakeParty:
+    Heroes = FakeHeroes
+
+    @staticmethod
+    def GetHeroes():
+        return list(FakeHeroes.heroes)
 
 
 class FakePlayer:
@@ -265,7 +281,7 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
         core.Inventory = FakeInventory
         core.Item = FakeItem
         core.ItemArray = FakeItemArray
-        core.Party = types.SimpleNamespace(Heroes=FakeHeroes)
+        core.Party = FakeParty
         core.Player = FakePlayer
         core.PyImGui = FakePyImGui
         core.UIManager = FakeUIManager
@@ -313,7 +329,8 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
         FakeInventory.upgrade_slots = {101: 1}
         FakeInventory.inventory_ids = {42: 321}
         FakeInventory.equipped_items = {(321, 3): 555}
-        FakeHeroes.selected_agent_id = 42
+        FakePlayer.agent_id = 42
+        self.module._selected_target_agent_index = 0
         FakeUpgradeWindow.open = True
         self.module._selected_rune_index = 0
         self.module._selected_armor_slot_index = 1
@@ -324,12 +341,73 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
         self.assertEqual(FakeUIManager.send_calls, [])
         self.assertEqual(FakeUpgradeWindow.confirm_calls, 0)
         self.assertIsNone(self.module._pending_upgrade)
-        self.assertIn("envoyee", self.module._last_status)
+        self.assertIn("sent", self.module._last_status)
+
+    def test_target_agent_options_include_player_and_present_heroes_by_name(self):
+        FakePlayer.agent_id = 99
+        FakeHeroes.heroes = [
+            types.SimpleNamespace(agent_id=42),
+            types.SimpleNamespace(agent_id=77),
+            types.SimpleNamespace(agent_id=0),
+        ]
+        FakeHeroes.names = {42: "Ogden Stonehealer", 77: "Vekk"}
+
+        options = self.module._get_target_agent_options()
+
+        self.assertEqual(options, [
+            (99, "Player (99)"),
+            (42, "Ogden Stonehealer (42)"),
+            (77, "Vekk (77)"),
+        ])
+
+    def test_target_agent_options_fallback_to_hero_position_when_name_missing(self):
+        FakeHeroes.heroes = [
+            types.SimpleNamespace(agent_id=42),
+            types.SimpleNamespace(agent_id=77),
+        ]
+        FakeHeroes.names = {77: "Vekk"}
+
+        options = self.module._get_target_agent_options()
+
+        self.assertEqual(options[1], (42, "Hero 1 (42)"))
+        self.assertEqual(options[2], (77, "Vekk (77)"))
+
+    def test_selected_target_agent_uses_combo_choice_instead_of_inventory_selection(self):
+        FakePlayer.agent_id = 99
+        FakeHeroes.selected_agent_id = 42
+        self.module._target_agent_options = [(99, "Player"), (77, "Vekk")]
+        self.module._selected_target_agent_index = 1
+
+        self.assertEqual(self.module._get_target_agent_id(), 77)
+
+    def test_clamp_selected_indexes_clamps_target_when_hero_leaves_party(self):
+        self.module._selected_target_agent_index = 4
+
+        self.module._clamp_selected_indexes([(101, "Rune")], [(99, "Player")])
+
+        self.assertEqual(self.module._selected_target_agent_index, 0)
+
+    def test_apply_selected_rune_targets_selected_hero_option(self):
+        FakeItemArray.item_ids = [101]
+        FakeInventory.upgrade_slots = {101: 1}
+        FakeInventory.inventory_ids = {77: 654}
+        FakeInventory.equipped_items = {(654, 2): 888}
+        FakePlayer.agent_id = 99
+        FakeHeroes.heroes = [types.SimpleNamespace(agent_id=77)]
+        FakeHeroes.names = {77: "Vekk"}
+        self.module._selected_target_agent_index = 1
+        self.module._selected_rune_index = 0
+        self.module._selected_armor_slot_index = 0
+
+        self.module._apply_selected_rune()
+
+        self.assertEqual(FakeInventory.apply_calls, [(654, 888, 101, 1, 77)])
+        self.assertIn("agent 77", self.module._last_status)
 
     def test_apply_selected_rune_rejects_second_order_while_upgrade_pending(self):
         self.module._pending_upgrade = {
             "rune_name": "Rune A",
-            "armor_label": "Plastron",
+            "armor_label": "Chest",
             "agent_id": 42,
             "started_at": 10.0,
         }
@@ -338,7 +416,7 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(FakeUIManager.send_calls, [])
-        self.assertIn("deja en attente", self.module._last_status)
+        self.assertIn("already pending", self.module._last_status)
 
     def test_describe_rune_application_reports_native_inputs(self):
         FakeInventory.inventory_ids = {42: 321}
@@ -372,7 +450,7 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
     def test_advance_pending_upgrade_confirms_when_upgrade_window_opens(self):
         self.module._pending_upgrade = {
             "rune_name": "Rune A",
-            "armor_label": "Plastron",
+            "armor_label": "Chest",
             "agent_id": 42,
             "started_at": 10.0,
         }
@@ -387,7 +465,7 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
     def test_advance_pending_upgrade_times_out_without_confirmation_window(self):
         self.module._pending_upgrade = {
             "rune_name": "Rune A",
-            "armor_label": "Plastron",
+            "armor_label": "Chest",
             "agent_id": 42,
             "started_at": 10.0,
         }
@@ -395,7 +473,7 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
         self.assertFalse(self.module._advance_pending_upgrade(now=16.0))
 
         self.assertIsNone(self.module._pending_upgrade)
-        self.assertIn("Timeout", self.module._last_status)
+        self.assertIn("timed out", self.module._last_status)
 
     def test_payload_log_formatter_decodes_little_endian_words(self):
         line = self.module._format_ui_payload_log((
@@ -490,7 +568,7 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
         self.assertEqual(FakeUIManager.payload_logs, [])
         self.assertEqual(self.module._ui_payload_capture_lines, [])
         self.assertTrue(self.module._ui_payload_capture_active)
-        self.assertIn("zero", self.module._last_status)
+        self.assertIn("reset", self.module._last_status)
 
     def test_ctos_packet_capture_formats_only_native_upgrade_order_packets(self):
         self.assertTrue(self.module._start_ctos_packet_capture())

@@ -14,23 +14,25 @@ except Exception:
     PACKET_SNIFFER = None
 
 
-MODULE_NAME = "Appliquer rune inventaire"
+MODULE_NAME = "Inventory Rune Applier"
 MODULE_ICON = "Textures/Module_Icons/Inventory.png"
 INTERNAL_GWCA_UI_MESSAGE_MASK = 0x30000000
 UPGRADE_CTO_HEADERS = {0x007F, 0x0080, 0x0082}
 ARMOR_RUNE_UPGRADE_SLOT = 1
 
 ARMOR_SLOTS = [
-    ("Plastron", 2),
-    ("Jambieres", 3),
-    ("Tete", 4),
-    ("Bottes", 5),
-    ("Gants", 6),
+    ("Chest", 2),
+    ("Leggings", 3),
+    ("Head", 4),
+    ("Boots", 5),
+    ("Gloves", 6),
 ]
 
 _selected_rune_index = 0
 _selected_armor_slot_index = 0
-_last_status = "Pret."
+_selected_target_agent_index = 0
+_target_agent_options = []
+_last_status = "Ready."
 _rune_name_cache = {}
 _rune_name_requested = set()
 _pending_upgrade = None
@@ -89,23 +91,65 @@ def _get_inventory_rune_items():
     return runes
 
 
-def _get_target_agent_id():
+def _get_target_agent_id(options=None):
+    if options is None:
+        options = _target_agent_options or _get_target_agent_options()
+    if not options:
+        return 0
+
+    index = max(0, min(_selected_target_agent_index, len(options) - 1))
+    return int(options[index][0] or 0)
+
+
+def _get_target_agent_options():
+    options = []
+    seen_agent_ids = set()
+
     try:
-        selected_agent_id = int(Party.Heroes.GetInventorySelectedAgentID() or 0)
+        player_agent_id = int(Player.GetAgentID() or 0)
     except Exception:
-        selected_agent_id = 0
-    if selected_agent_id:
-        return selected_agent_id
-    return int(Player.GetAgentID() or 0)
+        player_agent_id = 0
+    if player_agent_id:
+        options.append((player_agent_id, f"Player ({player_agent_id})"))
+        seen_agent_ids.add(player_agent_id)
+
+    try:
+        heroes = list(Party.GetHeroes() or [])
+    except Exception:
+        heroes = []
+
+    for hero_index, hero in enumerate(heroes, start=1):
+        try:
+            agent_id = int(getattr(hero, "agent_id", 0) or 0)
+        except Exception:
+            agent_id = 0
+        if not agent_id or agent_id in seen_agent_ids:
+            continue
+
+        try:
+            name = Party.Heroes.GetNameByAgentID(agent_id) or ""
+        except Exception:
+            name = ""
+        if not name:
+            name = f"Hero {hero_index}"
+
+        options.append((agent_id, f"{name} ({agent_id})"))
+        seen_agent_ids.add(agent_id)
+
+    return options
 
 
-def _clamp_selected_indexes(runes):
-    global _selected_rune_index, _selected_armor_slot_index
+def _clamp_selected_indexes(runes, target_options=None):
+    global _selected_rune_index, _selected_armor_slot_index, _selected_target_agent_index
     if runes:
         _selected_rune_index = max(0, min(_selected_rune_index, len(runes) - 1))
     else:
         _selected_rune_index = 0
     _selected_armor_slot_index = max(0, min(_selected_armor_slot_index, len(ARMOR_SLOTS) - 1))
+    if target_options:
+        _selected_target_agent_index = max(0, min(_selected_target_agent_index, len(target_options) - 1))
+    else:
+        _selected_target_agent_index = 0
 
 
 def _resolve_rune_application(agent_id, equip_slot, rune_item_id):
@@ -189,7 +233,7 @@ def _get_ui_payload_logs():
 
         return list(PyUIManager.UIManager.get_ui_message_logs())
     except Exception as exception:
-        _log_status(f"Capture UI impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"UI capture failed: {exception}", Py4GW.Console.MessageType.Error)
         return []
 
 
@@ -203,7 +247,7 @@ def _clear_native_ui_payload_logs():
 
             PyUIManager.UIManager.clear_ui_message_logs()
     except Exception as exception:
-        _log_status(f"Remise a zero payloads impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Failed to reset payloads: {exception}", Py4GW.Console.MessageType.Error)
         return False
     return True
 
@@ -214,7 +258,7 @@ def _clear_ui_payload_capture():
         return False
 
     _ui_payload_capture_lines = []
-    _log_status("Payloads UI remis a zero.", Py4GW.Console.MessageType.Info)
+    _log_status("UI payloads reset.", Py4GW.Console.MessageType.Info)
     return True
 
 
@@ -224,7 +268,7 @@ def _start_ui_payload_capture():
         return False
 
     _ui_payload_capture_active = True
-    _log_status("Capture UI demarree.", Py4GW.Console.MessageType.Info)
+    _log_status("UI capture started.", Py4GW.Console.MessageType.Info)
     return True
 
 
@@ -232,7 +276,7 @@ def _stop_ui_payload_capture():
     global _ui_payload_capture_active
     _ui_payload_capture_active = False
     _refresh_ui_payload_capture()
-    _log_status("Capture UI arretee.", Py4GW.Console.MessageType.Info)
+    _log_status("UI capture stopped.", Py4GW.Console.MessageType.Info)
     return True
 
 
@@ -245,7 +289,7 @@ def _refresh_ui_payload_capture(limit=UI_CAPTURE_MAX_LINES):
         try:
             lines.append(_format_ui_payload_log(entry))
         except Exception as exception:
-            lines.append(f"payload illisible: {exception}")
+            lines.append(f"unreadable payload: {exception}")
 
     _ui_payload_capture_lines = lines[-int(limit):]
     return list(_ui_payload_capture_lines)
@@ -254,34 +298,34 @@ def _refresh_ui_payload_capture(limit=UI_CAPTURE_MAX_LINES):
 def _dump_ui_payload_capture():
     lines = _refresh_ui_payload_capture()
     if not lines:
-        _log_status("Capture UI vide.", Py4GW.Console.MessageType.Warning)
+        _log_status("UI capture is empty.", Py4GW.Console.MessageType.Warning)
         return False
 
     for line in lines:
         Py4GW.Console.Log(MODULE_NAME, line, Py4GW.Console.MessageType.Info)
-    _log_status(f"{len(lines)} payload(s) UI journalise(s).", Py4GW.Console.MessageType.Info)
+    _log_status(f"{len(lines)} UI payload(s) logged.", Py4GW.Console.MessageType.Info)
     return True
 
 
 def _copy_ui_payload_capture():
     lines = _ui_payload_capture_lines or _refresh_ui_payload_capture()
     if not lines:
-        _log_status("Capture UI vide.", Py4GW.Console.MessageType.Warning)
+        _log_status("UI capture is empty.", Py4GW.Console.MessageType.Warning)
         return False
 
     try:
         PyImGui.set_clipboard_text("\n".join(lines))
     except Exception as exception:
-        _log_status(f"Copie capture UI impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Failed to copy UI capture: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
-    _log_status(f"{len(lines)} payload(s) UI copie(s).", Py4GW.Console.MessageType.Info)
+    _log_status(f"{len(lines)} UI payload(s) copied.", Py4GW.Console.MessageType.Info)
     return True
 
 
 def _get_ctos_packet_logs():
     if PACKET_SNIFFER is None:
-        _log_status("PacketSniffer indisponible.", Py4GW.Console.MessageType.Error)
+        _log_status("PacketSniffer unavailable.", Py4GW.Console.MessageType.Error)
         return []
 
     try:
@@ -290,16 +334,16 @@ def _get_ctos_packet_logs():
         try:
             return [entry for entry in PACKET_SNIFFER.get_logs() if getattr(entry, "direction", "") == "CToS"]
         except Exception as exception:
-            _log_status(f"Capture CToS impossible: {exception}", Py4GW.Console.MessageType.Error)
+            _log_status(f"CToS capture failed: {exception}", Py4GW.Console.MessageType.Error)
             return []
     except Exception as exception:
-        _log_status(f"Capture CToS impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"CToS capture failed: {exception}", Py4GW.Console.MessageType.Error)
         return []
 
 
 def _clear_native_ctos_packet_logs():
     if PACKET_SNIFFER is None:
-        _log_status("PacketSniffer indisponible.", Py4GW.Console.MessageType.Error)
+        _log_status("PacketSniffer unavailable.", Py4GW.Console.MessageType.Error)
         return False
 
     try:
@@ -307,7 +351,7 @@ def _clear_native_ctos_packet_logs():
     except TypeError:
         PACKET_SNIFFER.clear_logs()
     except Exception as exception:
-        _log_status(f"Remise a zero CToS impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Failed to reset CToS: {exception}", Py4GW.Console.MessageType.Error)
         return False
     return True
 
@@ -318,14 +362,14 @@ def _clear_ctos_packet_capture():
         return False
 
     _ctos_packet_capture_lines = []
-    _log_status("Capture CToS remise a zero.", Py4GW.Console.MessageType.Info)
+    _log_status("CToS capture reset.", Py4GW.Console.MessageType.Info)
     return True
 
 
 def _start_ctos_packet_capture():
     global _ctos_packet_capture_active
     if PACKET_SNIFFER is None:
-        _log_status("PacketSniffer indisponible.", Py4GW.Console.MessageType.Error)
+        _log_status("PacketSniffer unavailable.", Py4GW.Console.MessageType.Error)
         return False
     if not _clear_ctos_packet_capture():
         return False
@@ -335,15 +379,15 @@ def _start_ctos_packet_capture():
     except TypeError:
         started = PACKET_SNIFFER.initialize()
     except Exception as exception:
-        _log_status(f"Initialisation capture CToS impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Failed to initialize CToS capture: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
     if not started:
-        _log_status("Initialisation capture CToS refusee.", Py4GW.Console.MessageType.Error)
+        _log_status("CToS capture initialization refused.", Py4GW.Console.MessageType.Error)
         return False
 
     _ctos_packet_capture_active = True
-    _log_status("Capture CToS demarree.", Py4GW.Console.MessageType.Info)
+    _log_status("CToS capture started.", Py4GW.Console.MessageType.Info)
     return True
 
 
@@ -358,7 +402,7 @@ def _stop_ctos_packet_capture():
             PACKET_SNIFFER.terminate()
         except Exception:
             pass
-    _log_status("Capture CToS arretee.", Py4GW.Console.MessageType.Info)
+    _log_status("CToS capture stopped.", Py4GW.Console.MessageType.Info)
     return True
 
 
@@ -400,7 +444,7 @@ def _refresh_ctos_packet_capture(limit=CTOS_CAPTURE_MAX_LINES):
         try:
             lines.append(_format_ctos_packet_log(entry))
         except Exception as exception:
-            lines.append(f"paquet CToS illisible: {exception}")
+            lines.append(f"unreadable CToS packet: {exception}")
 
     _ctos_packet_capture_lines = lines[-int(limit):]
     return list(_ctos_packet_capture_lines)
@@ -409,28 +453,28 @@ def _refresh_ctos_packet_capture(limit=CTOS_CAPTURE_MAX_LINES):
 def _dump_ctos_packet_capture():
     lines = _refresh_ctos_packet_capture()
     if not lines:
-        _log_status("Capture CToS vide.", Py4GW.Console.MessageType.Warning)
+        _log_status("CToS capture is empty.", Py4GW.Console.MessageType.Warning)
         return False
 
     for line in lines:
         Py4GW.Console.Log(MODULE_NAME, line, Py4GW.Console.MessageType.Info)
-    _log_status(f"{len(lines)} paquet(s) CToS upgrade journalise(s).", Py4GW.Console.MessageType.Info)
+    _log_status(f"{len(lines)} CToS upgrade packet(s) logged.", Py4GW.Console.MessageType.Info)
     return True
 
 
 def _copy_ctos_packet_capture():
     lines = _ctos_packet_capture_lines or _refresh_ctos_packet_capture()
     if not lines:
-        _log_status("Capture CToS vide.", Py4GW.Console.MessageType.Warning)
+        _log_status("CToS capture is empty.", Py4GW.Console.MessageType.Warning)
         return False
 
     try:
         PyImGui.set_clipboard_text("\n".join(lines))
     except Exception as exception:
-        _log_status(f"Copie capture CToS impossible: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Failed to copy CToS capture: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
-    _log_status(f"{len(lines)} paquet(s) CToS copie(s).", Py4GW.Console.MessageType.Info)
+    _log_status(f"{len(lines)} CToS packet(s) copied.", Py4GW.Console.MessageType.Info)
     return True
 
 
@@ -461,24 +505,24 @@ def _advance_pending_upgrade(now=None):
             if UpgradeWindow.Confirm():
                 _pending_upgrade = None
                 _log_status(
-                    f"Confirmation envoyee pour {rune_name} sur {armor_label} (agent {agent_id}).",
+                    f"Confirmation sent for {rune_name} on {armor_label} (agent {agent_id}).",
                     Py4GW.Console.MessageType.Info,
                 )
                 return True
             _log_status(
-                f"Fenetre Upgrade ouverte mais confirmation impossible pour {rune_name}.",
+                f"Upgrade window is open but confirmation failed for {rune_name}.",
                 Py4GW.Console.MessageType.Warning,
             )
             return False
     except Exception as exception:
         _pending_upgrade = None
-        _log_status(f"Erreur confirmation upgrade: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Upgrade confirmation error: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
     if now - _pending_upgrade["started_at"] > PENDING_UPGRADE_TIMEOUT_SECONDS:
         _pending_upgrade = None
         _log_status(
-            f"Timeout confirmation upgrade pour {rune_name} sur {armor_label} (agent {agent_id}).",
+            f"Upgrade confirmation timed out for {rune_name} on {armor_label} (agent {agent_id}).",
             Py4GW.Console.MessageType.Warning,
         )
         return False
@@ -488,18 +532,19 @@ def _advance_pending_upgrade(now=None):
 
 def _apply_selected_rune():
     if _pending_upgrade:
-        _log_status("Demande d'upgrade deja en attente.", Py4GW.Console.MessageType.Warning)
+        _log_status("Upgrade request already pending.", Py4GW.Console.MessageType.Warning)
         return False
 
     runes = _get_inventory_rune_items()
-    _clamp_selected_indexes(runes)
+    target_options = _get_target_agent_options()
+    _clamp_selected_indexes(runes, target_options)
     if not runes:
-        _log_status("Aucune rune applicable trouvee dans l'inventaire.", Py4GW.Console.MessageType.Warning)
+        _log_status("No applicable rune found in inventory.", Py4GW.Console.MessageType.Warning)
         return False
 
-    agent_id = _get_target_agent_id()
+    agent_id = _get_target_agent_id(target_options)
     if not agent_id:
-        _log_status("Aucun agent cible disponible.", Py4GW.Console.MessageType.Warning)
+        _log_status("No target agent available.", Py4GW.Console.MessageType.Warning)
         return False
 
     rune_item_id, rune_name = runes[_selected_rune_index]
@@ -514,18 +559,18 @@ def _apply_selected_rune():
             agent_id,
         ))
     except Exception as exception:
-        _log_status(f"Erreur application rune: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Rune application error: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
     if applied:
         _log_status(
-            f"Demande d'application envoyee pour {rune_name} sur {armor_label} (agent {agent_id}; {diagnostic}).",
+            f"Application request sent for {rune_name} on {armor_label} (agent {agent_id}; {diagnostic}).",
             Py4GW.Console.MessageType.Info,
         )
         return True
 
     _log_status(
-        f"Application native refusee pour {rune_name} sur {armor_label} (agent {agent_id}; {diagnostic}).",
+        f"Native application refused for {rune_name} on {armor_label} (agent {agent_id}; {diagnostic}).",
         Py4GW.Console.MessageType.Warning,
     )
     return False
@@ -535,12 +580,12 @@ def _safe_apply_selected_rune():
     try:
         return _apply_selected_rune()
     except Exception as exception:
-        _log_status(f"Erreur widget rune: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Rune widget error: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
 
 def main():
-    global _selected_rune_index, _selected_armor_slot_index
+    global _selected_rune_index, _selected_armor_slot_index, _selected_target_agent_index, _target_agent_options
 
     _advance_pending_upgrade()
     if _ui_payload_capture_active:
@@ -550,61 +595,68 @@ def main():
 
     if PyImGui.begin(MODULE_NAME, PyImGui.WindowFlags.AlwaysAutoResize):
         runes = _get_inventory_rune_items()
-        _clamp_selected_indexes(runes)
+        _target_agent_options = _get_target_agent_options()
+        _clamp_selected_indexes(runes, _target_agent_options)
+
+        if _target_agent_options:
+            target_labels = [label for _, label in _target_agent_options]
+            _selected_target_agent_index = PyImGui.combo("Target", _selected_target_agent_index, target_labels)
+        else:
+            PyImGui.text("No player or hero available.")
 
         if runes:
             rune_labels = [f"{name} ({item_id})" for item_id, name in runes]
             _selected_rune_index = PyImGui.combo("Rune", _selected_rune_index, rune_labels)
         else:
-            PyImGui.text("Aucune rune applicable dans les sacs.")
+            PyImGui.text("No applicable rune in bags.")
 
         armor_labels = [label for label, _ in ARMOR_SLOTS]
-        _selected_armor_slot_index = PyImGui.combo("Piece d'armure", _selected_armor_slot_index, armor_labels)
+        _selected_armor_slot_index = PyImGui.combo("Armor piece", _selected_armor_slot_index, armor_labels)
 
         target_agent_id = _get_target_agent_id()
-        PyImGui.text(f"Agent cible: {target_agent_id or 'aucun'}")
+        PyImGui.text(f"Target agent: {target_agent_id or 'none'}")
 
-        if PyImGui.button("Appliquer la rune", width=180, height=28):
+        if PyImGui.button("Apply rune", width=180, height=28):
             _safe_apply_selected_rune()
 
         PyImGui.text(_last_status)
 
         PyImGui.separator()
-        if PyImGui.button("Demarrer capture UI", width=160, height=24):
+        if PyImGui.button("Start UI capture", width=160, height=24):
             _start_ui_payload_capture()
         PyImGui.same_line(0.0, 6.0)
-        if PyImGui.button("Arreter capture UI", width=150, height=24):
+        if PyImGui.button("Stop UI capture", width=150, height=24):
             _stop_ui_payload_capture()
 
-        if PyImGui.button("Actualiser capture", width=160, height=24):
+        if PyImGui.button("Refresh capture", width=160, height=24):
             _refresh_ui_payload_capture()
         PyImGui.same_line(0.0, 6.0)
         if PyImGui.button("Log capture", width=150, height=24):
             _dump_ui_payload_capture()
 
-        if PyImGui.button("Copier capture", width=160, height=24):
+        if PyImGui.button("Copy capture", width=160, height=24):
             _copy_ui_payload_capture()
         PyImGui.same_line(0.0, 6.0)
-        if PyImGui.button("Vider payloads", width=150, height=24):
+        if PyImGui.button("Clear payloads", width=150, height=24):
             _clear_ui_payload_capture()
 
         for line in _ui_payload_capture_lines[-10:]:
             PyImGui.text_wrapped(line)
 
         PyImGui.separator()
-        if PyImGui.button("Demarrer capture CToS", width=160, height=24):
+        if PyImGui.button("Start CToS capture", width=160, height=24):
             _start_ctos_packet_capture()
         PyImGui.same_line(0.0, 6.0)
-        if PyImGui.button("Arreter capture CToS", width=150, height=24):
+        if PyImGui.button("Stop CToS capture", width=150, height=24):
             _stop_ctos_packet_capture()
 
         if PyImGui.button("Log CToS", width=160, height=24):
             _dump_ctos_packet_capture()
         PyImGui.same_line(0.0, 6.0)
-        if PyImGui.button("Copier CToS", width=150, height=24):
+        if PyImGui.button("Copy CToS", width=150, height=24):
             _copy_ctos_packet_capture()
 
-        if PyImGui.button("Vider CToS", width=160, height=24):
+        if PyImGui.button("Clear CToS", width=160, height=24):
             _clear_ctos_packet_capture()
 
         for line in _ctos_packet_capture_lines[-10:]:
