@@ -375,7 +375,7 @@ class Inventory:
         inventory_id: int,
         target_item_id: int,
         upgrade_item_id: int,
-        upgrade_slot: int = 0,
+        upgrade_slot: int | None = None,
         target_agent_id: int = 0,
     ) -> bool:
         """
@@ -384,7 +384,8 @@ class Inventory:
             inventory_id (int): Native inventory ID containing the target item.
             target_item_id (int): Target armor/weapon item ID.
             upgrade_item_id (int): Rune/upgrade item ID.
-            upgrade_slot (int, optional): Native upgrade slot. 0 lets this helper derive it.
+            upgrade_slot (int | None, optional): Native upgrade slot. None lets this helper derive it;
+                explicit 0 is forwarded for native insignia upgrade orders.
             target_agent_id (int, optional): Agent ID that owns the target inventory.
         Returns: bool: True if the native UI order request was sent.
         """
@@ -392,7 +393,8 @@ class Inventory:
             inventory_id = int(inventory_id or 0)
             target_item_id = int(target_item_id or 0)
             upgrade_item_id = int(upgrade_item_id or 0)
-            upgrade_slot = int(upgrade_slot or 0)
+            derive_upgrade_slot = upgrade_slot is None
+            upgrade_slot = 0 if derive_upgrade_slot else int(upgrade_slot or 0)
             target_agent_id = int(target_agent_id or 0)
         except Exception:
             return False
@@ -403,10 +405,10 @@ class Inventory:
             return False
         if not Inventory.IsInventoryIDValid(inventory_id):
             return False
-        if not upgrade_slot:
+        if derive_upgrade_slot:
             upgrade_slot = Inventory.GetUpgradeSlot(upgrade_item_id)
-        if not upgrade_slot:
-            return False
+            if not upgrade_slot:
+                return False
         if not Inventory.ValidateUpgrade(target_item_id, upgrade_item_id):
             return False
         return bool(Inventory.inventory_instance().ApplyUpgrade(

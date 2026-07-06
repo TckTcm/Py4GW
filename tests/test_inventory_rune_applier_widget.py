@@ -315,6 +315,16 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
 
         self.assertEqual(runes, [(101, "Rune A")])
 
+    def test_upgrade_list_filters_native_armor_upgrade_slots(self):
+        FakeItemArray.item_ids = [101, 202, 303, 404]
+        FakeInventory.upgrade_slots = {101: 1, 202: 7, 303: 0, 404: 8}
+        FakeItem.names = {101: "Rune A", 202: "Insignia B", 404: "Weapon Mod C"}
+        FakeItem.ready = {101: True, 202: True, 404: True}
+
+        upgrades = self.module._get_inventory_upgrade_items()
+
+        self.assertEqual(upgrades, [(101, "Rune A"), (202, "Insignia B")])
+
     def test_safe_item_name_requests_name_and_uses_it_when_ready(self):
         self.assertEqual(self.module._safe_item_name(101), "item 101")
         self.assertEqual(FakeItem.requests, [101])
@@ -404,6 +414,25 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
         self.assertEqual(FakeInventory.apply_calls, [(654, 888, 101, 1, 77)])
         self.assertIn("agent 77", self.module._last_status)
 
+    def test_apply_selected_upgrade_applies_insignia_to_selected_hero_option(self):
+        FakeItemArray.item_ids = [202]
+        FakeInventory.upgrade_slots = {202: 7}
+        FakeItem.names = {202: "Insignia B"}
+        FakeItem.ready = {202: True}
+        FakeInventory.inventory_ids = {77: 654}
+        FakeInventory.equipped_items = {(654, 2): 888}
+        FakePlayer.agent_id = 99
+        FakeHeroes.heroes = [types.SimpleNamespace(agent_id=77)]
+        FakeHeroes.names = {77: "Vekk"}
+        self.module._selected_rune_index = 0
+        self.module._selected_target_agent_index = 1
+        self.module._selected_armor_slot_index = 0
+
+        self.module._apply_selected_upgrade()
+
+        self.assertEqual(FakeInventory.apply_calls, [(654, 888, 202, 0, 77)])
+        self.assertIn("Insignia B", self.module._last_status)
+
     def test_apply_selected_rune_rejects_second_order_while_upgrade_pending(self):
         self.module._pending_upgrade = {
             "rune_name": "Rune A",
@@ -427,6 +456,16 @@ class InventoryRuneApplierWidgetTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(diagnostic, "inventory_id=321, target_item=555, upgrade_item=101, upgrade_slot=1")
+
+    def test_describe_upgrade_application_accepts_native_insignia_slot(self):
+        FakeInventory.inventory_ids = {42: 321}
+        FakeInventory.equipped_items = {(321, 2): 555}
+        FakeInventory.upgrade_slots = {202: 7}
+
+        ok, diagnostic = self.module._describe_upgrade_application(42, 2, 202)
+
+        self.assertTrue(ok)
+        self.assertEqual(diagnostic, "inventory_id=321, target_item=555, upgrade_item=202, upgrade_slot=0, item_upgrade_slot=7")
 
     def test_describe_rune_application_rejects_same_target_and_rune_before_native_validation(self):
         FakeInventory.inventory_ids = {42: 321}

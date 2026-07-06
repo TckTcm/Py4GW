@@ -14,11 +14,13 @@ except Exception:
     PACKET_SNIFFER = None
 
 
-MODULE_NAME = "Inventory Rune Applier"
+MODULE_NAME = "Inventory Armor Upgrader"
 MODULE_ICON = "Textures/Module_Icons/Inventory.png"
 INTERNAL_GWCA_UI_MESSAGE_MASK = 0x30000000
 UPGRADE_CTO_HEADERS = {0x007F, 0x0080, 0x0082}
 ARMOR_RUNE_UPGRADE_SLOT = 1
+ARMOR_INSIGNIA_UPGRADE_SLOT = 7
+ARMOR_UPGRADE_SLOTS = {ARMOR_RUNE_UPGRADE_SLOT, ARMOR_INSIGNIA_UPGRADE_SLOT}
 
 ARMOR_SLOTS = [
     ("Chest", 2),
@@ -91,6 +93,19 @@ def _get_inventory_rune_items():
     return runes
 
 
+def _get_inventory_upgrade_items():
+    upgrades = []
+    bags = ItemArray.CreateBagList(*_inventory_bag_ids())
+    for item_id in ItemArray.GetItemArray(bags):
+        try:
+            if int(Inventory.GetUpgradeSlot(item_id)) not in ARMOR_UPGRADE_SLOTS:
+                continue
+        except Exception:
+            continue
+        upgrades.append((int(item_id), _safe_item_name(int(item_id))))
+    return upgrades
+
+
 def _get_target_agent_id(options=None):
     if options is None:
         options = _target_agent_options or _get_target_agent_options()
@@ -153,6 +168,16 @@ def _clamp_selected_indexes(runes, target_options=None):
 
 
 def _resolve_rune_application(agent_id, equip_slot, rune_item_id):
+    return _resolve_upgrade_application(agent_id, equip_slot, rune_item_id)
+
+
+def _get_upgrade_request_slot(item_upgrade_slot):
+    if item_upgrade_slot == ARMOR_INSIGNIA_UPGRADE_SLOT:
+        return 0
+    return item_upgrade_slot
+
+
+def _resolve_upgrade_application(agent_id, equip_slot, upgrade_item_id):
     inventory_id = int(Inventory.GetInventoryIDFromAgent(agent_id) or 0)
     if not inventory_id:
         return False, "inventory_id=0", None
@@ -160,27 +185,35 @@ def _resolve_rune_application(agent_id, equip_slot, rune_item_id):
     target_item_id = int(Inventory.GetEquippedItemID(inventory_id, equip_slot) or 0)
     if not target_item_id:
         return False, f"inventory_id={inventory_id}, target_item=0", None
-    if target_item_id == int(rune_item_id):
-        return False, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(rune_item_id)}", None
+    if target_item_id == int(upgrade_item_id):
+        return False, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(upgrade_item_id)}", None
 
-    upgrade_slot = int(Inventory.GetUpgradeSlot(rune_item_id) or 0)
-    if upgrade_slot != ARMOR_RUNE_UPGRADE_SLOT:
-        return False, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(rune_item_id)}, upgrade_slot={upgrade_slot}", None
+    upgrade_slot = int(Inventory.GetUpgradeSlot(upgrade_item_id) or 0)
+    if upgrade_slot not in ARMOR_UPGRADE_SLOTS:
+        return False, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(upgrade_item_id)}, upgrade_slot={upgrade_slot}", None
+    request_upgrade_slot = _get_upgrade_request_slot(upgrade_slot)
 
-    validate_ok = bool(Inventory.ValidateUpgrade(target_item_id, rune_item_id))
+    validate_ok = bool(Inventory.ValidateUpgrade(target_item_id, upgrade_item_id))
     if not validate_ok:
-        return False, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(rune_item_id)}, validate=0", None
+        return False, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(upgrade_item_id)}, validate=0", None
 
     request = {
         "inventory_id": inventory_id,
         "target_item_id": target_item_id,
-        "upgrade_slot": upgrade_slot,
+        "upgrade_slot": request_upgrade_slot,
     }
-    return True, f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(rune_item_id)}, upgrade_slot={upgrade_slot}", request
+    diagnostic = f"inventory_id={inventory_id}, target_item={target_item_id}, upgrade_item={int(upgrade_item_id)}, upgrade_slot={request_upgrade_slot}"
+    if request_upgrade_slot != upgrade_slot:
+        diagnostic = f"{diagnostic}, item_upgrade_slot={upgrade_slot}"
+    return True, diagnostic, request
 
 
 def _describe_rune_application(agent_id, equip_slot, rune_item_id):
-    ok, diagnostic, _ = _resolve_rune_application(agent_id, equip_slot, rune_item_id)
+    return _describe_upgrade_application(agent_id, equip_slot, rune_item_id)
+
+
+def _describe_upgrade_application(agent_id, equip_slot, upgrade_item_id):
+    ok, diagnostic, _ = _resolve_upgrade_application(agent_id, equip_slot, upgrade_item_id)
     return ok, diagnostic
 
 
@@ -531,15 +564,19 @@ def _advance_pending_upgrade(now=None):
 
 
 def _apply_selected_rune():
+    return _apply_selected_upgrade()
+
+
+def _apply_selected_upgrade():
     if _pending_upgrade:
         _log_status("Upgrade request already pending.", Py4GW.Console.MessageType.Warning)
         return False
 
-    runes = _get_inventory_rune_items()
+    upgrades = _get_inventory_upgrade_items()
     target_options = _get_target_agent_options()
-    _clamp_selected_indexes(runes, target_options)
-    if not runes:
-        _log_status("No applicable rune found in inventory.", Py4GW.Console.MessageType.Warning)
+    _clamp_selected_indexes(upgrades, target_options)
+    if not upgrades:
+        _log_status("No applicable armor upgrade found in inventory.", Py4GW.Console.MessageType.Warning)
         return False
 
     agent_id = _get_target_agent_id(target_options)
@@ -547,40 +584,44 @@ def _apply_selected_rune():
         _log_status("No target agent available.", Py4GW.Console.MessageType.Warning)
         return False
 
-    rune_item_id, rune_name = runes[_selected_rune_index]
+    upgrade_item_id, upgrade_name = upgrades[_selected_rune_index]
     armor_label, equip_slot = ARMOR_SLOTS[_selected_armor_slot_index]
     try:
-        request_ok, diagnostic, request = _resolve_rune_application(agent_id, equip_slot, rune_item_id)
+        request_ok, diagnostic, request = _resolve_upgrade_application(agent_id, equip_slot, upgrade_item_id)
         applied = bool(request_ok and request and Inventory.ApplyUpgrade(
             request["inventory_id"],
             request["target_item_id"],
-            rune_item_id,
+            upgrade_item_id,
             request["upgrade_slot"],
             agent_id,
         ))
     except Exception as exception:
-        _log_status(f"Rune application error: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Upgrade application error: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
     if applied:
         _log_status(
-            f"Application request sent for {rune_name} on {armor_label} (agent {agent_id}; {diagnostic}).",
+            f"Application request sent for {upgrade_name} on {armor_label} (agent {agent_id}; {diagnostic}).",
             Py4GW.Console.MessageType.Info,
         )
         return True
 
     _log_status(
-        f"Native application refused for {rune_name} on {armor_label} (agent {agent_id}; {diagnostic}).",
+        f"Native application refused for {upgrade_name} on {armor_label} (agent {agent_id}; {diagnostic}).",
         Py4GW.Console.MessageType.Warning,
     )
     return False
 
 
 def _safe_apply_selected_rune():
+    return _safe_apply_selected_upgrade()
+
+
+def _safe_apply_selected_upgrade():
     try:
-        return _apply_selected_rune()
+        return _apply_selected_upgrade()
     except Exception as exception:
-        _log_status(f"Rune widget error: {exception}", Py4GW.Console.MessageType.Error)
+        _log_status(f"Upgrade widget error: {exception}", Py4GW.Console.MessageType.Error)
         return False
 
 
@@ -594,9 +635,9 @@ def main():
         _refresh_ctos_packet_capture()
 
     if PyImGui.begin(MODULE_NAME, PyImGui.WindowFlags.AlwaysAutoResize):
-        runes = _get_inventory_rune_items()
+        upgrades = _get_inventory_upgrade_items()
         _target_agent_options = _get_target_agent_options()
-        _clamp_selected_indexes(runes, _target_agent_options)
+        _clamp_selected_indexes(upgrades, _target_agent_options)
 
         if _target_agent_options:
             target_labels = [label for _, label in _target_agent_options]
@@ -604,11 +645,11 @@ def main():
         else:
             PyImGui.text("No player or hero available.")
 
-        if runes:
-            rune_labels = [f"{name} ({item_id})" for item_id, name in runes]
-            _selected_rune_index = PyImGui.combo("Rune", _selected_rune_index, rune_labels)
+        if upgrades:
+            upgrade_labels = [f"{name} ({item_id})" for item_id, name in upgrades]
+            _selected_rune_index = PyImGui.combo("Upgrade", _selected_rune_index, upgrade_labels)
         else:
-            PyImGui.text("No applicable rune in bags.")
+            PyImGui.text("No applicable armor upgrade in bags.")
 
         armor_labels = [label for label, _ in ARMOR_SLOTS]
         _selected_armor_slot_index = PyImGui.combo("Armor piece", _selected_armor_slot_index, armor_labels)
@@ -616,8 +657,8 @@ def main():
         target_agent_id = _get_target_agent_id()
         PyImGui.text(f"Target agent: {target_agent_id or 'none'}")
 
-        if PyImGui.button("Apply rune", width=180, height=28):
-            _safe_apply_selected_rune()
+        if PyImGui.button("Apply upgrade", width=180, height=28):
+            _safe_apply_selected_upgrade()
 
         PyImGui.text(_last_status)
 

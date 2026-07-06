@@ -137,6 +137,15 @@ class InventoryUpgradeApiTests(unittest.TestCase):
         self.assertEqual(FakePyInventoryInstance.apply_upgrade_calls, [(321, 555, 101, 1, 42)])
         self.assertEqual(FakeUIManager.send_calls, [])
 
+    def test_apply_upgrade_preserves_explicit_zero_slot_for_insignia_order(self):
+        FakePyInventoryInstance.inventory_ids[42] = 321
+        FakePyInventoryInstance.equipped_items[(321, 2)] = 555
+
+        result = self.inventory_module.Inventory.ApplyUpgrade(321, 555, 202, 0, 42)
+
+        self.assertTrue(result)
+        self.assertEqual(FakePyInventoryInstance.apply_upgrade_calls, [(321, 555, 202, 0, 42)])
+
     def test_apply_upgrade_rejects_same_target_and_upgrade_item_before_native_validation(self):
         FakePyInventoryInstance.inventory_ids[42] = 321
 
