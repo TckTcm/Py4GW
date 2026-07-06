@@ -58,15 +58,11 @@ def _selection_debug_details():
 
 
 def _get_inventory_equipment_frame_id():
-    frame_id = int(UIManager.GetFrameIDByLabel(INVENTORY_EQUIPMENT_FRAME_LABEL) or 0)
-    if frame_id:
-        return frame_id
-
     native_resolver = getattr(Party.Heroes, "GetInventoryEquipmentFrameID", None)
     if native_resolver:
         return int(native_resolver() or 0)
 
-    return 0
+    return int(UIManager.GetFrameIDByLabel(INVENTORY_EQUIPMENT_FRAME_LABEL) or 0)
 
 
 def _queue_direct_inventory_label_select():

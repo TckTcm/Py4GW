@@ -145,6 +145,7 @@ class HeroInventorySelectorTests(unittest.TestCase):
 
     def test_retry_flow_prefers_direct_inventory_equipment_frame_message(self):
         FakeUIManager.label_frame_id = 77
+        FakeHeroes.inventory_equipment_frame_id = 77
         FakeUIManager.direct_message_selects = True
 
         self.module._select_hero_one()
@@ -159,6 +160,7 @@ class HeroInventorySelectorTests(unittest.TestCase):
 
     def test_direct_message_sent_without_confirmed_selection_retries_direct_message(self):
         FakeUIManager.label_frame_id = 77
+        FakeHeroes.inventory_equipment_frame_id = 77
 
         self.module._select_hero_one()
         self.module._selection_next_action = 0.0
@@ -175,13 +177,13 @@ class HeroInventorySelectorTests(unittest.TestCase):
         )
         self.assertEqual(self.module._selection_state, "retry_native")
 
-    def test_retries_when_inventory_equipment_label_appears_after_first_tick(self):
+    def test_retries_when_inventory_equipment_frame_appears_after_first_tick(self):
         FakeUIManager.direct_message_selects = True
 
         self.module._select_hero_one()
         self.module._selection_next_action = 0.0
         self.module._tick_native_selection()
-        FakeUIManager.label_frame_id = 77
+        FakeHeroes.inventory_equipment_frame_id = 77
         self.module._selection_next_action = 0.0
         self.module._tick_native_selection()
         self.module._selection_next_action = 0.0
@@ -204,6 +206,17 @@ class HeroInventorySelectorTests(unittest.TestCase):
         self.assertEqual(FakeUIManager.send_frame_ui_message_calls, [(88, 0x56, FakeHeroes.hero_agent_id, 0)])
         self.assertEqual(self.module._selection_state, "idle")
         self.assertIn("sélectionné", self.module._last_status)
+
+    def test_direct_message_does_not_bypass_guarded_native_zero_with_label_lookup(self):
+        FakeUIManager.label_frame_id = 77
+
+        self.module._select_hero_one()
+        self.module._selection_next_action = 0.0
+        self.module._tick_native_selection()
+
+        self.assertEqual(FakeUIManager.send_frame_ui_message_calls, [])
+        self.assertEqual(self.module._selection_direct_frame_id, 0)
+        self.assertEqual(self.module._selection_state, "retry_native")
 
     def test_debug_details_include_python_direct_state_and_inventory_visibility(self):
         FakeUIManager.visible = True
