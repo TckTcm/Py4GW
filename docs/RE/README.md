@@ -9,6 +9,7 @@ Use these files by subject area, not by history:
 | `reverse_engineering_reference.md` | Canonical RE reference for tools, architecture, bridging methods, key function maps, UI message architecture, and travel findings | Starting a new RE task or re-orienting to the stack |
 | `CPP_WASM_MAPPING.md` | Procedure for translating C++ or GWCA functions into WASM and stripped EXE addresses | Bridging functions across layers |
 | `packet_sniffers_reference.md` | Dedicated reference for StoC/CToS sniffers, packet capture architecture, and dump tooling | Working on live packet capture, packet identification, or sniffer capabilities |
+| `inventory_hero_and_upgrade_reverse_engineering.md` | Inventory hero selection and rune/upgrade application flow: native frame messages, item upgrade CToS order sequence, stale UI continuation guards, crash signatures, and implementation map | Working on hero inventory selection, applying runes/upgrades to armor, or debugging post-upgrade inventory crashes |
 | `rosetta_stone.txt` | GwA2 to Py4GW mapping | Looking up legacy equivalents |
 | `map_travel_reverse_engineering.md` | Travel-pipeline RE log and conclusions | Working on travel, redirect, or map-load sequencing |
 | `map_travel_research.md` | Packet-focused travel notes | Working from packet captures |

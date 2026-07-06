@@ -40,6 +40,61 @@ def _hero_name():
     return Party.Heroes.GetNameByAgentID(_selection_hero_agent_id) or f"agent {_selection_hero_agent_id}"
 
 
+def _current_hero_one_agent_id():
+    try:
+        return int(Party.Heroes.GetHeroAgentIDByPartyPosition(1) or 0)
+    except Exception:
+        return 0
+
+
+def _is_selection_target_current():
+    current_agent_id = _current_hero_one_agent_id()
+    if current_agent_id == _selection_hero_agent_id:
+        return True
+
+    if current_agent_id:
+        _log_status(
+            f"Selection annulee: hero 1 a change (ancien agent {_selection_hero_agent_id}, nouvel agent {current_agent_id}).",
+            Py4GW.Console.MessageType.Warning,
+        )
+    else:
+        _log_status("Selection annulee: hero 1 n'est plus dans le groupe.", Py4GW.Console.MessageType.Warning)
+    return False
+
+
+def _get_valid_inventory_id_for_agent(agent_id):
+    global _selection_direct_error
+
+    try:
+        inventory_id = int(Inventory.GetInventoryIDFromAgent(agent_id) or 0)
+    except Exception as exception:
+        _selection_direct_error = f"inventaire indisponible: {exception}"
+        return 0
+
+    if not inventory_id:
+        _selection_direct_error = "inventaire non pret"
+        return 0
+
+    if inventory_id == int(agent_id):
+        _selection_direct_error = f"inventaire {inventory_id} identique a l'agent"
+        return 0
+
+    validator = getattr(Inventory, "IsInventoryIDValid", None)
+    if not callable(validator):
+        _selection_direct_error = "validateur inventaire indisponible"
+        return 0
+
+    try:
+        if not bool(validator(inventory_id)):
+            _selection_direct_error = f"inventaire {inventory_id} invalide"
+            return 0
+    except Exception as exception:
+        _selection_direct_error = f"validation inventaire impossible: {exception}"
+        return 0
+
+    return inventory_id
+
+
 def _selection_debug_details():
     try:
         selected_agent_id = Party.Heroes.GetInventorySelectedAgentID()
@@ -77,6 +132,17 @@ def _queue_direct_inventory_label_select():
     def _send_on_game_thread():
         global _selection_direct_pending, _selection_direct_completed, _selection_direct_sent, _selection_direct_frame_id, _selection_direct_error
         try:
+            current_agent_id = _current_hero_one_agent_id()
+            if current_agent_id != agent_id:
+                _selection_direct_error = f"hero 1 change avant envoi (ancien agent {agent_id}, nouvel agent {current_agent_id})"
+                _selection_direct_sent = False
+                return
+
+            inventory_id = _get_valid_inventory_id_for_agent(agent_id)
+            if not inventory_id:
+                _selection_direct_sent = False
+                return
+
             frame_id = _get_inventory_equipment_frame_id()
             _selection_direct_frame_id = frame_id
             _selection_direct_sent = bool(
@@ -117,11 +183,18 @@ def _try_native_select_hero_one():
 
     _selection_native_attempts += 1
     _queue_direct_inventory_label_select()
-    _log_status(
-        f"Envoi natif Python 0x56 pour {_hero_name()} via {INVENTORY_EQUIPMENT_FRAME_LABEL} "
-        f"(tentative {_selection_native_attempts}/{NATIVE_RETRY_LIMIT}; agent inventaire actuel: {selected_agent_id}).",
-        Py4GW.Console.MessageType.Info,
-    )
+    if _selection_direct_completed and not _selection_direct_sent and _selection_direct_error:
+        _log_status(
+            f"Selection native differee pour {_hero_name()}: {_selection_direct_error} "
+            f"(tentative {_selection_native_attempts}/{NATIVE_RETRY_LIMIT}; agent inventaire actuel: {selected_agent_id}).",
+            Py4GW.Console.MessageType.Warning,
+        )
+    else:
+        _log_status(
+            f"Envoi natif Python 0x56 pour {_hero_name()} via {INVENTORY_EQUIPMENT_FRAME_LABEL} "
+            f"(tentative {_selection_native_attempts}/{NATIVE_RETRY_LIMIT}; agent inventaire actuel: {selected_agent_id}).",
+            Py4GW.Console.MessageType.Info,
+        )
     return False
 
 
@@ -158,6 +231,10 @@ def _tick_native_selection():
         return
 
     if now < _selection_next_action:
+        return
+
+    if not _is_selection_target_current():
+        _selection_state = "idle"
         return
 
     if _selection_state == "retry_native":

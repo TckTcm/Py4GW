@@ -234,6 +234,12 @@ class UIManager:
         lparam: int,
         skip_hooks: bool = False
     ) -> bool: ...
+
+    @staticmethod
+    def get_ui_message_logs() -> List[Tuple[int, int, bool, bool, int, List[int], List[int]]]: ...
+
+    @staticmethod
+    def clear_ui_message_logs() -> None: ...
     
     @staticmethod
     def SendFrameUIMessage(

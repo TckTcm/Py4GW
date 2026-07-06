@@ -571,6 +571,14 @@ class UIManager:
         return PyUIManager.UIManager.SendUIMessageRaw(msgid, wparam, lparam, skip_hooks)
 
     @staticmethod
+    def GetUIMessageLogs():
+        return PyUIManager.UIManager.get_ui_message_logs()
+
+    @staticmethod
+    def ClearUIMessageLogs() -> None:
+        PyUIManager.UIManager.clear_ui_message_logs()
+
+    @staticmethod
     def SendFrameUIMessage(frame_id: int, message_id: int, wparam: int, lparam: int = 0) -> bool:
         return PyUIManager.UIManager.SendFrameUIMessage(frame_id, message_id, wparam, lparam)
 

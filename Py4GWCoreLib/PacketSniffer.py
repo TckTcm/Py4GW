@@ -468,7 +468,8 @@ class PacketSniffer:
                 chars.append(chr(code_unit))
                 cursor += 2
             if len(chars) >= min_chars and cursor + 1 < len(raw) and raw[cursor] == 0 and raw[cursor + 1] == 0:
-                hits.append(f"@{offset}='{"".join(chars)}'")
+                text = "".join(chars)
+                hits.append(f"@{offset}='{text}'")
                 seen_offsets.update(range(offset, cursor + 2, 2))
                 offset = cursor + 2
                 continue
@@ -548,6 +549,12 @@ class PacketSniffer:
             fields = {'heading': round(self._f32(raw, 4) or 0.0, 4), 'pitch': round(self._f32(raw, 8) or 0.0, 4)}
         elif header == 0x46 and len(raw) >= 20:
             fields = {'skill_id': self._u32(raw, 4), 'type': self._u32(raw, 8), 'target_id': self._u32(raw, 12), 'flags': self._u32(raw, 16)}
+        elif header == 0x7F and len(raw) >= 12:
+            fields = {'upgrade_slot': self._u32(raw, 4), 'upgrade_item_id': self._u32(raw, 8)}
+        elif header == 0x80 and len(raw) >= 12:
+            fields = {'target_inventory_id': self._u32(raw, 4), 'target_item_id': self._u32(raw, 8)}
+        elif header == 0x82 and len(raw) >= 4:
+            fields = {'order': 'end'}
         elif header == 0x00C1 and len(raw) >= 12:
             fields = self._format_u32_words(raw)
         else:

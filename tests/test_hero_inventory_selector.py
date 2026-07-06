@@ -99,15 +99,35 @@ class FakeHeroes:
         return cls.inventory_equipment_frame_id
 
 
+class FakeInventory:
+    inventory_ids = {42: 321}
+    valid_inventory_ids = {321}
+
+    @classmethod
+    def reset(cls):
+        cls.inventory_ids = {42: 321}
+        cls.valid_inventory_ids = {321}
+
+    @classmethod
+    def GetInventoryIDFromAgent(cls, agent_id):
+        return cls.inventory_ids.get(agent_id, 0)
+
+    @classmethod
+    def IsInventoryIDValid(cls, inventory_id):
+        return inventory_id in cls.valid_inventory_ids
+
+
 class HeroInventorySelectorTests(unittest.TestCase):
     def setUp(self):
         FakeUIManager.reset()
         FakeHeroes.reset()
+        FakeInventory.reset()
 
         core = types.ModuleType("Py4GWCoreLib")
         core.UIManager = FakeUIManager
         core.WindowID = FakeWindowID
         core.Party = types.SimpleNamespace(Heroes=FakeHeroes)
+        core.Inventory = FakeInventory
         core.PyImGui = types.SimpleNamespace()
 
         enums_pkg = types.ModuleType("Py4GWCoreLib.enums_src")
@@ -206,6 +226,47 @@ class HeroInventorySelectorTests(unittest.TestCase):
         self.assertEqual(FakeUIManager.send_frame_ui_message_calls, [(88, 0x56, FakeHeroes.hero_agent_id, 0)])
         self.assertEqual(self.module._selection_state, "idle")
         self.assertIn("sélectionné", self.module._last_status)
+
+    def test_pending_selection_is_cancelled_when_hero_one_agent_changes(self):
+        FakeHeroes.inventory_equipment_frame_id = 88
+        FakeUIManager.direct_message_selects = True
+
+        self.module._select_hero_one()
+        FakeHeroes.hero_agent_id = 99
+        self.module._selection_next_action = 0.0
+        self.module._tick_native_selection()
+
+        self.assertEqual(FakeUIManager.send_frame_ui_message_calls, [])
+        self.assertEqual(self.module._selection_state, "idle")
+        self.assertIn("annul", self.module._last_status.lower())
+
+    def test_direct_message_waits_for_valid_native_inventory_id(self):
+        FakeHeroes.inventory_equipment_frame_id = 88
+        FakeInventory.inventory_ids = {42: 150}
+        FakeInventory.valid_inventory_ids = set()
+        FakeUIManager.direct_message_selects = True
+
+        self.module._select_hero_one()
+        self.module._selection_next_action = 0.0
+        self.module._tick_native_selection()
+
+        self.assertEqual(FakeUIManager.send_frame_ui_message_calls, [])
+        self.assertEqual(self.module._selection_state, "retry_native")
+        self.assertIn("inventaire", self.module._last_status.lower())
+
+    def test_direct_message_rejects_hero_inventory_id_equal_to_agent_id(self):
+        FakeHeroes.inventory_equipment_frame_id = 88
+        FakeInventory.inventory_ids = {42: 42}
+        FakeInventory.valid_inventory_ids = {42}
+        FakeUIManager.direct_message_selects = True
+
+        self.module._select_hero_one()
+        self.module._selection_next_action = 0.0
+        self.module._tick_native_selection()
+
+        self.assertEqual(FakeUIManager.send_frame_ui_message_calls, [])
+        self.assertEqual(self.module._selection_state, "retry_native")
+        self.assertIn("identique", self.module._last_status.lower())
 
     def test_direct_message_does_not_bypass_guarded_native_zero_with_label_lookup(self):
         FakeUIManager.label_frame_id = 77
