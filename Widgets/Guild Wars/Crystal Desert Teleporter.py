@@ -52,7 +52,7 @@ select_switch_candidates = CrystalDesertTeleporterCore.select_switch_candidates
 
 MODULE_NAME = "Crystal Desert Teleporter"
 MODULE_ICON = "Textures/Module_Icons/Travel.png"
-MODULE_BUILD = "approach-move-v48"
+MODULE_BUILD = "click-guard-v49"
 MAPPING_FILE = os.path.join(os.path.dirname(__file__), "CrystalDesertTeleporterMappings.json")
 _PERSISTENT_MAPPINGS_ENABLED = False
 
@@ -1064,7 +1064,7 @@ def _track_server_switch_confirmation(event) -> None:
 
     if int(event.header) != 0x0115:
         return
-    if (int(event.state) & 0x3) == 0:
+    if not _is_server_switch_confirmation_event(event):
         return
 
     sequence = [int(agent_id) for agent_id in _click_plan.sequence if int(agent_id) > 0]
@@ -1074,6 +1074,23 @@ def _track_server_switch_confirmation(event) -> None:
     _server_confirmed_switch_agent_ids.add(int(event.agent_id))
     if _click_plan.complete and set(sequence).issubset(_server_confirmed_switch_agent_ids):
         _set_status("Server confirmed sequence. Step onto the platform.")
+
+
+def _is_server_switch_confirmation_event(event) -> bool:
+    return int(event.header) == 0x0115 and int(event.state) != 0
+
+
+def _confirm_pending_click_from_server(event) -> bool:
+    if not _pending_click_agent_id:
+        return False
+    if int(event.agent_id) != int(_pending_click_agent_id):
+        return False
+    if not _is_server_switch_confirmation_event(event):
+        return False
+    return _advance_click_plan_for_agent(
+        int(event.agent_id),
+        f"Server confirmed switch agent {int(event.agent_id)}",
+    )
 
 
 def _set_click_progress_status(prefix: str) -> None:
@@ -1112,9 +1129,9 @@ def _process_pending_click_timeout() -> None:
 
     agent_id = _pending_click_agent_id
     _clear_pending_click()
-    _advance_click_plan_for_agent(
-        agent_id,
-        f"No CToS interact confirmation for switch agent {agent_id}; assuming interaction was queued",
+    _set_status(
+        f"No switch confirmation for agent {agent_id}; retrying switch click.",
+        Py4GW.Console.MessageType.Warning,
     )
 
 
@@ -1268,6 +1285,7 @@ def _process_capture() -> None:
             f"0x{event.header:04X} agent={event.agent_id} state=0x{event.state:X} tick={event.tick}"
         )
         del _last_events[:-8]
+        _confirm_pending_click_from_server(event)
         _track_server_switch_confirmation(event)
 
     _capture_status.add_packets(stoc=stoc_count, ctos=ctos_count, matches=matched_this_tick)

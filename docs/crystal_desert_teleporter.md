@@ -49,6 +49,15 @@ The widget uses several packet families:
 
 When a switch is out of interaction range, the widget does not path to the exact gadget center. It moves to an approach point just inside interaction range. This avoids some teleporter switch models where the gadget center is not a reliable walk target.
 
+## Switch Click Guard
+
+After each switch interaction, the widget waits for proof that the switch was actually accepted before moving to the next switch. A switch is considered confirmed when either:
+
+- the client emits a `CToS 0x0039` interaction packet for the pending switch, or
+- the server emits a non-zero `StoC 0x0115 GADGET_STATE` packet for the pending switch.
+
+If no confirmation arrives before the guard timeout, the widget does not advance the sequence. It clears the pending interaction and retries the same switch on the next auto-click tick or when `Click next` is pressed again.
+
 ## Expected Widget State
 
 A successful run usually looks like this:

@@ -1233,11 +1233,50 @@ class CrystalDesertTeleporterWidgetTests(unittest.TestCase):
         current_time[0] += self.widget._INTERACT_CONFIRM_TIMEOUT + 0.1
         self.widget._process_pending_click_timeout()
 
+        self.assertEqual(self.widget._click_plan.next_agent_id(), 18)
+        self.assertEqual(self.widget._pending_click_agent_id, 0)
+        self.assertIn("No switch confirmation", self.widget._status)
+        self.assertIn("retry", self.widget._status)
+
+    def test_auto_click_retries_same_switch_after_missing_confirmation(self):
+        self.set_known_return_platform()
+        self.harness.player_xy = (3034.0, -9498.0)
+        self.widget._capturing = True
+        self.widget._ctos_capture_available = True
+        self.widget._auto_click = True
+        self.widget._click_plan = self.widget.ClickPlan([18, 19])
+        current_time = [100.0]
+        self.widget.time.monotonic = lambda: current_time[0]
+
+        self.widget._click_next_switch()
+        current_time[0] += self.widget._INTERACT_CONFIRM_TIMEOUT + 0.1
+        self.widget._auto_click_tick()
+
+        self.assertEqual(self.harness.interactions, [(18, False), (18, False)])
+        self.assertEqual(self.widget._click_plan.next_agent_id(), 18)
+        self.assertEqual(self.widget._pending_click_agent_id, 18)
+
+    def test_server_switch_confirmation_advances_pending_click_plan(self):
+        self.set_known_return_platform()
+        self.harness.player_xy = (3034.0, -9498.0)
+        self.widget._capturing = True
+        self.widget._ctos_capture_available = True
+        self.widget._click_plan = self.widget.ClickPlan([18, 19])
+
+        self.widget._click_next_switch()
+        self.harness.add_packet(
+            "StoC",
+            1200,
+            0x0115,
+            struct.pack("<III", 0x0115, 18, 3),
+        )
+        self.widget._process_capture()
+
         self.assertEqual(self.widget._click_plan.next_agent_id(), 19)
         self.assertEqual(self.widget._pending_click_agent_id, 0)
-        self.assertIn("No CToS interact confirmation", self.widget._status)
+        self.assertEqual(self.widget._status, "Server confirmed switch agent 18. Next switch: 19.")
 
-    def test_final_pending_click_timeout_tells_user_to_wait_for_server_confirmation(self):
+    def test_final_pending_click_timeout_keeps_waiting_for_switch_confirmation(self):
         self.set_known_return_platform()
         self.harness.player_xy = (3034.0, -9498.0)
         self.widget._capturing = True
@@ -1250,8 +1289,9 @@ class CrystalDesertTeleporterWidgetTests(unittest.TestCase):
         current_time[0] += self.widget._INTERACT_CONFIRM_TIMEOUT + 0.1
         self.widget._process_pending_click_timeout()
 
-        self.assertTrue(self.widget._click_plan.complete)
-        self.assertIn("Wait a few seconds for server sequence confirmation", self.widget._status)
+        self.assertFalse(self.widget._click_plan.complete)
+        self.assertEqual(self.widget._click_plan.next_agent_id(), 18)
+        self.assertIn("No switch confirmation", self.widget._status)
 
     def test_final_ctos_confirmation_tells_user_to_wait_for_server_confirmation(self):
         self.set_known_return_platform()
