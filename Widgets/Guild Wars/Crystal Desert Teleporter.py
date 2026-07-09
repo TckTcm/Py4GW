@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import ctypes
 import json
+import math
 import os
 import struct
 import time
@@ -51,13 +52,14 @@ select_switch_candidates = CrystalDesertTeleporterCore.select_switch_candidates
 
 MODULE_NAME = "Crystal Desert Teleporter"
 MODULE_ICON = "Textures/Module_Icons/Travel.png"
-MODULE_BUILD = "server-confirmed-v47"
+MODULE_BUILD = "approach-move-v48"
 MAPPING_FILE = os.path.join(os.path.dirname(__file__), "CrystalDesertTeleporterMappings.json")
 _PERSISTENT_MAPPINGS_ENABLED = False
 
 _MAX_SWITCH_DISTANCE = 650.0
 _MIN_SWITCH_DISTANCE = 60.0
 _INTERACT_DISTANCE = 140.0
+_APPROACH_DISTANCE = 0.75 * _INTERACT_DISTANCE
 _AUTO_CLICK_DELAY = 0.85
 _MOVE_REISSUE_DELAY = 1.25
 _INTERACT_CONFIRM_TIMEOUT = 1.25
@@ -1314,6 +1316,19 @@ def _process_runtime_changes() -> None:
         _capture_status.add_packets(matches=runtime_matches)
 
 
+def _switch_approach_point(decision, player_xy: tuple[float, float]) -> tuple[float, float]:
+    player_x, player_y = float(player_xy[0]), float(player_xy[1])
+    target_x, target_y = float(decision.x), float(decision.y)
+    delta_x = target_x - player_x
+    delta_y = target_y - player_y
+    distance = math.hypot(delta_x, delta_y)
+    if distance <= _APPROACH_DISTANCE:
+        return target_x, target_y
+
+    ratio = (distance - _APPROACH_DISTANCE) / distance
+    return player_x + delta_x * ratio, player_y + delta_y * ratio
+
+
 def _click_next_switch() -> None:
     global _last_click_time, _last_move_agent_id, _last_move_time
     global _pending_click_agent_id, _pending_click_started_at
@@ -1331,15 +1346,17 @@ def _click_next_switch() -> None:
         return
 
     now = time.monotonic()
+    player_xy = Player.GetXY()
     decision = plan_switch_interaction(
         agent_id,
         _candidate_switches,
-        player_xy=Player.GetXY(),
+        player_xy=player_xy,
         interact_distance=_INTERACT_DISTANCE,
     )
     if decision is not None and not decision.in_range:
         if _last_move_agent_id != agent_id or now - _last_move_time >= _MOVE_REISSUE_DELAY:
-            Player.Move(decision.x, decision.y)
+            move_x, move_y = _switch_approach_point(decision, player_xy)
+            Player.Move(move_x, move_y)
             _last_move_agent_id = agent_id
             _last_move_time = now
             _set_status(f"Moving to switch agent {agent_id}.")

@@ -45,6 +45,10 @@ The widget uses several packet families:
 - `CToS 0x00C1` with first word `48`: means the sequence reset and the widget should restart at the first switch.
 - Plain `CToS 0x00C1` targeting packets are not treated as sequence proof because they can be emitted by selection only.
 
+## Movement Behavior
+
+When a switch is out of interaction range, the widget does not path to the exact gadget center. It moves to an approach point just inside interaction range. This avoids some teleporter switch models where the gadget center is not a reliable walk target.
+
 ## Expected Widget State
 
 A successful run usually looks like this:

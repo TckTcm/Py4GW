@@ -1340,9 +1340,28 @@ class CrystalDesertTeleporterWidgetTests(unittest.TestCase):
         self.widget._click_next_switch()
 
         self.assertEqual(self.harness.interactions, [])
-        self.assertEqual(self.harness.moves, [(3034.0, -9498.0)])
+        self.assertEqual(len(self.harness.moves), 1)
+        move_x, move_y = self.harness.moves[0]
+        distance_to_switch = ((move_x - 3034.0) ** 2 + (move_y - -9498.0) ** 2) ** 0.5
+        self.assertLess(distance_to_switch, self.widget._INTERACT_DISTANCE)
+        self.assertNotEqual(self.harness.moves[0], (3034.0, -9498.0))
         self.assertEqual(self.widget._click_plan.next_agent_id(), 18)
         self.assertEqual(self.widget._status, "Moving to switch agent 18.")
+
+    def test_click_next_moves_to_approach_point_instead_of_switch_center(self):
+        self.set_known_return_platform()
+        self.harness.player_xy = (3034.0, -9300.0)
+        self.widget._capturing = True
+        self.widget._click_plan = self.widget.ClickPlan([18])
+
+        self.widget._click_next_switch()
+
+        self.assertEqual(len(self.harness.moves), 1)
+        move_x, move_y = self.harness.moves[0]
+        self.assertAlmostEqual(move_x, 3034.0, places=3)
+        self.assertGreater(move_y, -9498.0)
+        self.assertLess(abs(move_y - -9498.0), self.widget._INTERACT_DISTANCE)
+        self.assertNotEqual(self.harness.moves[0], (3034.0, -9498.0))
 
 
 if __name__ == "__main__":
