@@ -1403,6 +1403,45 @@ class CrystalDesertTeleporterWidgetTests(unittest.TestCase):
         self.assertLess(abs(move_y - -9498.0), self.widget._INTERACT_DISTANCE)
         self.assertNotEqual(self.harness.moves[0], (3034.0, -9498.0))
 
+    def test_click_next_uses_unstuck_nudge_when_move_makes_no_progress(self):
+        self.set_known_return_platform()
+        self.harness.player_xy = (0.0, 0.0)
+        self.widget._capturing = True
+        self.widget._click_plan = self.widget.ClickPlan([18])
+        current_time = [100.0]
+        self.widget.time.monotonic = lambda: current_time[0]
+
+        self.widget._click_next_switch()
+        first_move = self.harness.moves[-1]
+        current_time[0] += self.widget._MOVE_REISSUE_DELAY + 0.1
+        self.widget._click_next_switch()
+
+        self.assertEqual(self.harness.interactions, [])
+        self.assertEqual(len(self.harness.moves), 2)
+        self.assertNotEqual(self.harness.moves[-1], first_move)
+        self.assertEqual(self.widget._click_plan.next_agent_id(), 18)
+        self.assertIn("Unsticking near switch agent 18", self.widget._status)
+
+    def test_click_next_keeps_normal_approach_when_move_progresses(self):
+        self.set_known_return_platform()
+        self.harness.player_xy = (0.0, 0.0)
+        self.widget._capturing = True
+        self.widget._click_plan = self.widget.ClickPlan([18])
+        current_time = [100.0]
+        self.widget.time.monotonic = lambda: current_time[0]
+
+        self.widget._click_next_switch()
+        current_time[0] += self.widget._MOVE_REISSUE_DELAY + 0.1
+        self.harness.player_xy = (600.0, -1800.0)
+        self.widget._click_next_switch()
+
+        self.assertEqual(self.harness.interactions, [])
+        self.assertEqual(len(self.harness.moves), 2)
+        move_x, move_y = self.harness.moves[-1]
+        distance_to_switch = ((move_x - 3034.0) ** 2 + (move_y - -9498.0) ** 2) ** 0.5
+        self.assertLess(distance_to_switch, self.widget._INTERACT_DISTANCE)
+        self.assertEqual(self.widget._status, "Moving to switch agent 18.")
+
 
 if __name__ == "__main__":
     unittest.main()

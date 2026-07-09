@@ -49,6 +49,8 @@ The widget uses several packet families:
 
 When a switch is out of interaction range, the widget does not path to the exact gadget center. It moves to an approach point just inside interaction range. This avoids some teleporter switch models where the gadget center is not a reliable walk target.
 
+The widget also has a local unstuck guard while moving between switches. On each movement reissue, it compares the current player position and the remaining distance to the target switch against the previous sample. If the player barely moved and did not get closer, the next movement command is a short lateral/backward nudge before the widget retries the normal approach point. This mirrors the project pattern used by follower movement recovery, but stays local to the teleporter widget and does not send `/stuck` for short switch-to-switch corrections.
+
 ## Switch Click Guard
 
 After each switch interaction, the widget waits for proof that the switch was actually accepted before moving to the next switch. A switch is considered confirmed when either:
@@ -79,7 +81,7 @@ When `Next: <done>` is visible and the server-confirmed status is shown, the seq
 
 If the widget does not learn a sequence:
 
-- Make sure `Build:` shows the latest widget build.
+- Make sure `Build:` shows the latest widget build. Switch movement unstuck support starts at `switch-unstuck-v50`.
 - Use `Scan + Record` before triggering the platform.
 - Wait a few seconds after the last switch interaction; server confirmations are delayed.
 - Check `Recent sequence events` for `0x0115 agent=... state=...` lines.

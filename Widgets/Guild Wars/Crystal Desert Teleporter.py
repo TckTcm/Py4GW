@@ -52,7 +52,7 @@ select_switch_candidates = CrystalDesertTeleporterCore.select_switch_candidates
 
 MODULE_NAME = "Crystal Desert Teleporter"
 MODULE_ICON = "Textures/Module_Icons/Travel.png"
-MODULE_BUILD = "click-guard-v49"
+MODULE_BUILD = "switch-unstuck-v50"
 MAPPING_FILE = os.path.join(os.path.dirname(__file__), "CrystalDesertTeleporterMappings.json")
 _PERSISTENT_MAPPINGS_ENABLED = False
 
@@ -63,6 +63,9 @@ _APPROACH_DISTANCE = 0.75 * _INTERACT_DISTANCE
 _AUTO_CLICK_DELAY = 0.85
 _MOVE_REISSUE_DELAY = 1.25
 _INTERACT_CONFIRM_TIMEOUT = 1.25
+_STUCK_MIN_MOVED = 25.0
+_STUCK_MIN_CLOSED = 20.0
+_UNSTUCK_NUDGE_DISTANCE = 180.0
 
 _capturing = False
 _ctos_capture_available = False
@@ -78,6 +81,11 @@ _last_move_agent_id = 0
 _last_move_time = 0.0
 _pending_click_agent_id = 0
 _pending_click_started_at = 0.0
+_move_progress_agent_id = 0
+_move_progress_last_xy: tuple[float, float] | None = None
+_move_progress_last_distance = 0.0
+_move_progress_sample_time = 0.0
+_unstuck_side = 1
 _last_events: list[str] = []
 _last_runtime_changes: list[str] = []
 _last_probe_packets: list[str] = []
@@ -261,6 +269,7 @@ def _forget_learned_mappings() -> None:
     _last_move_time = 0.0
     _pending_click_agent_id = 0
     _pending_click_started_at = 0.0
+    _reset_move_progress_tracking()
     if _pending_platform_sequence:
         _set_status("Learned mappings cleared. Use Add buttons for the current platform burst.")
     else:
@@ -282,6 +291,7 @@ def _begin_manual_click_learning() -> None:
     _last_move_time = 0.0
     _pending_click_agent_id = 0
     _pending_click_started_at = 0.0
+    _reset_move_progress_tracking()
     _set_status("Learning manual switch clicks. Click the switches in the correct order.")
 
 
@@ -764,6 +774,7 @@ def _clear_recording_state() -> None:
     _last_move_time = 0.0
     _pending_click_agent_id = 0
     _pending_click_started_at = 0.0
+    _reset_move_progress_tracking()
     _prime_runtime_snapshots()
     _clear_packet_logs()
 
@@ -843,6 +854,7 @@ def _stop_capture(reason: str = "user") -> None:
     _last_move_time = 0.0
     _pending_click_agent_id = 0
     _pending_click_started_at = 0.0
+    _reset_move_progress_tracking()
     try:
         PACKET_SNIFFER.terminate("both")
     except TypeError:
@@ -1035,6 +1047,7 @@ def _reset_click_plan_to_sequence_start() -> bool:
     _last_move_time = 0.0
     _pending_click_agent_id = 0
     _pending_click_started_at = 0.0
+    _reset_move_progress_tracking()
     _reset_server_confirmation_tracking()
     return True
 
@@ -1347,6 +1360,65 @@ def _switch_approach_point(decision, player_xy: tuple[float, float]) -> tuple[fl
     return player_x + delta_x * ratio, player_y + delta_y * ratio
 
 
+def _reset_move_progress_tracking() -> None:
+    global _move_progress_agent_id, _move_progress_last_xy, _move_progress_last_distance
+    global _move_progress_sample_time, _unstuck_side
+    _move_progress_agent_id = 0
+    _move_progress_last_xy = None
+    _move_progress_last_distance = 0.0
+    _move_progress_sample_time = 0.0
+    _unstuck_side = 1
+
+
+def _switch_unstuck_point(decision, player_xy: tuple[float, float]) -> tuple[float, float]:
+    player_x, player_y = float(player_xy[0]), float(player_xy[1])
+    delta_x = float(decision.x) - player_x
+    delta_y = float(decision.y) - player_y
+    distance = math.hypot(delta_x, delta_y)
+    if distance <= 0.001:
+        return player_x + _UNSTUCK_NUDGE_DISTANCE, player_y
+
+    side = 1 if _unstuck_side >= 0 else -1
+    perp_x = -delta_y / distance * side
+    perp_y = delta_x / distance * side
+    back_x = -delta_x / distance
+    back_y = -delta_y / distance
+    return (
+        player_x + perp_x * _UNSTUCK_NUDGE_DISTANCE + back_x * (_UNSTUCK_NUDGE_DISTANCE * 0.35),
+        player_y + perp_y * _UNSTUCK_NUDGE_DISTANCE + back_y * (_UNSTUCK_NUDGE_DISTANCE * 0.35),
+    )
+
+
+def _movement_target_for_switch(decision, player_xy: tuple[float, float], now: float) -> tuple[float, float, bool]:
+    global _move_progress_agent_id, _move_progress_last_xy, _move_progress_last_distance
+    global _move_progress_sample_time, _unstuck_side
+    player_xy = (float(player_xy[0]), float(player_xy[1]))
+    current_distance = float(decision.distance)
+    agent_id = int(decision.agent_id)
+
+    if _move_progress_agent_id != agent_id:
+        _move_progress_agent_id = agent_id
+        _move_progress_last_xy = player_xy
+        _move_progress_last_distance = current_distance
+        _move_progress_sample_time = now
+        return (*_switch_approach_point(decision, player_xy), False)
+
+    stuck = False
+    if _move_progress_last_xy is not None and now - _move_progress_sample_time >= _MOVE_REISSUE_DELAY:
+        moved = math.hypot(player_xy[0] - _move_progress_last_xy[0], player_xy[1] - _move_progress_last_xy[1])
+        closed = _move_progress_last_distance - current_distance
+        stuck = moved < _STUCK_MIN_MOVED and closed < _STUCK_MIN_CLOSED
+        _move_progress_last_xy = player_xy
+        _move_progress_last_distance = current_distance
+        _move_progress_sample_time = now
+
+    if stuck:
+        _unstuck_side *= -1
+        return (*_switch_unstuck_point(decision, player_xy), True)
+
+    return (*_switch_approach_point(decision, player_xy), False)
+
+
 def _click_next_switch() -> None:
     global _last_click_time, _last_move_agent_id, _last_move_time
     global _pending_click_agent_id, _pending_click_started_at
@@ -1373,11 +1445,14 @@ def _click_next_switch() -> None:
     )
     if decision is not None and not decision.in_range:
         if _last_move_agent_id != agent_id or now - _last_move_time >= _MOVE_REISSUE_DELAY:
-            move_x, move_y = _switch_approach_point(decision, player_xy)
+            move_x, move_y, unstucking = _movement_target_for_switch(decision, player_xy, now)
             Player.Move(move_x, move_y)
             _last_move_agent_id = agent_id
             _last_move_time = now
-            _set_status(f"Moving to switch agent {agent_id}.")
+            if unstucking:
+                _set_status(f"Unsticking near switch agent {agent_id}; retrying approach.")
+            else:
+                _set_status(f"Moving to switch agent {agent_id}.")
         _last_click_time = now
         return
 
@@ -1385,6 +1460,7 @@ def _click_next_switch() -> None:
     _last_click_time = now
     _last_move_agent_id = 0
     _last_move_time = 0.0
+    _reset_move_progress_tracking()
     if _ctos_capture_available:
         _pending_click_agent_id = agent_id
         _pending_click_started_at = now
@@ -1477,6 +1553,7 @@ def _draw_controls() -> None:
         _last_move_time = 0.0
         _pending_click_agent_id = 0
         _pending_click_started_at = 0.0
+        _reset_move_progress_tracking()
         _last_raw_server_packets.clear()
         _raw_server_header_counts.clear()
         _reset_server_confirmation_tracking()
@@ -1521,6 +1598,7 @@ def _draw_controls() -> None:
         _last_move_time = 0.0
         _pending_click_agent_id = 0
         _pending_click_started_at = 0.0
+        _reset_move_progress_tracking()
         _clear_packet_logs()
         _prime_runtime_snapshots()
         if _capturing:
