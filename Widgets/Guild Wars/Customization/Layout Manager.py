@@ -249,6 +249,10 @@ class WindowLayouts:
 
     def get_all_accounts_from_json (self):
         import json
+        if not os.path.exists(self.accounts_file):
+            self.all_accounts = []
+            return
+
         with open(self.accounts_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
