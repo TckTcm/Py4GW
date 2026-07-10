@@ -221,6 +221,11 @@ class Player:
         return Player.player_instance().target_id
 
     @staticmethod
+    def GetTargetSelectionState() -> dict[str, int | bool]:
+        """Return the native manual, automatic, and evaluated target state."""
+        return dict(Player.player_instance().GetTargetSelectionState())
+
+    @staticmethod
     def GetAgent() -> AgentStruct | None:
         """
         Purpose: Retrieve the player's agent.
@@ -699,6 +704,14 @@ class Player:
             Player.player_instance().ChangeTarget(agent_id)
         #ActionQueueManager().AddAction("ACTION",PlayerMethods.ChangeTarget,agent_id)
         ActionQueueManager().AddAction("ACTION",_do_action)
+
+    @staticmethod
+    def ChangeTargetManual(agent_id: int) -> None:
+        """Select an agent through the same manual-target path as a mouse click."""
+        def _do_action():
+            Player.player_instance().ChangeTargetManual(agent_id)
+
+        ActionQueueManager().AddAction("ACTION", _do_action)
         
                
     @staticmethod
@@ -728,6 +741,11 @@ class Player:
             Player.player_instance().InteractAgent(agent_id, call_target)
 
         ActionQueueManager().AddAction("ACTION",_do_action)
+
+    @staticmethod
+    def OpenLockedChest(use_key: bool = False) -> bool:
+        """Open the manually selected locked chest without issuing movement."""
+        return bool(Player.player_instance().OpenLockedChest(use_key))
         
 
     @staticmethod

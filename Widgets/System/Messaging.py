@@ -1532,8 +1532,6 @@ def DonateToGuild(index: int, message: SharedMessageStruct):
 
 #region Open Chest
 def OpenChest(index: int, message: SharedMessageStruct):
-    start_time = time.time()
-    
     cascade = int(message.Params[1]) == 1
     chest_id = int(message.Params[0])
     
@@ -1541,6 +1539,32 @@ def OpenChest(index: int, message: SharedMessageStruct):
     
     GLOBAL_CACHE.ShMem.MarkMessageAsRunning(email_owner, index)
     SnapshotHeroAIOptions(email_owner)
+
+    def select_chest_as_manual_target(timeout_ms: int = 1500) -> bool:
+        Player.ChangeTargetManual(chest_id)
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        while time.monotonic() < deadline:
+            try:
+                state = Player.GetTargetSelectionState()
+                selected_id = int(state.get("manual_target_id", 0))
+            except Exception:
+                selected_id = Player.GetTargetID()
+
+            if selected_id == chest_id and Player.GetTargetID() == chest_id:
+                ConsoleLog(
+                    MODULE_NAME,
+                    f"Locked chest {chest_id} is now the native manual target.",
+                    Console.MessageType.Info,
+                )
+                return True
+            yield from Routines.Yield.wait(50)
+
+        ConsoleLog(
+            MODULE_NAME,
+            f"Failed to establish native manual target for locked chest {chest_id}.",
+            Console.MessageType.Warning,
+        )
+        return False
     
     def unlock_chest():
         has_lockpick = GLOBAL_CACHE.Inventory.GetModelCount(ModelID.Lockpick) > 0
@@ -1554,30 +1578,20 @@ def OpenChest(index: int, message: SharedMessageStruct):
                 
         DisableHeroAIOptions(email_owner)
         yield from Routines.Yield.wait(100)
-        x, y = Agent.GetXY(chest_id)
-        ConsoleLog(MODULE_NAME, f"Moving to chest at ({x}, {y})", Console.MessageType.Info)
-        yield from Routines.Yield.Movement.FollowPath([(x, y)])
-        yield from Routines.Yield.wait(100)
-        
-        ConsoleLog(MODULE_NAME, f"Interacting with chest ID {chest_id}", Console.MessageType.Info)
-        yield from Routines.Yield.Player.InteractAgent(chest_id)
-        yield from Routines.Yield.wait(150)
 
-        ConsoleLog(MODULE_NAME, "Checking for locked chest window...", Console.MessageType.Info)
-        if UIManager.IsLockedChestWindowVisible():
-            while True:
-                if time.time() - start_time > 30:
-                    ConsoleLog(MODULE_NAME, "Timeout reached while opening chest, halting.", Console.MessageType.Warning)
-                    return
-            
-                Player.SendDialog(2)
-                yield from Routines.Yield.wait(1500)    
-            
-                if not UIManager.IsLockedChestWindowVisible():
-                    ConsoleLog(MODULE_NAME, "Chest successfully unlocked.", Console.MessageType.Info)
-                    return
-        else:
-            ConsoleLog(MODULE_NAME, "Chest is not locked or already opened.", Console.MessageType.Info)
+        if not (yield from select_chest_as_manual_target()):
+            return
+
+        if Player.GetTargetID() != chest_id:
+            if not (yield from select_chest_as_manual_target()):
+                return
+
+        ConsoleLog(MODULE_NAME, f"Sending remote lockpick request for chest ID {chest_id}", Console.MessageType.Info)
+        if not Player.OpenLockedChest(False):
+            ConsoleLog(MODULE_NAME, "Native remote chest-open request was rejected.", Console.MessageType.Warning)
+            return
+        yield from Routines.Yield.wait(500)
+        ConsoleLog(MODULE_NAME, "Remote chest-open request queued without movement.", Console.MessageType.Info)
                 
     try:
         yield from unlock_chest()  

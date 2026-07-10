@@ -289,6 +289,7 @@ KNOWN_CTOS_LENGTHS: dict[int, int] = {
     0x46: 20,
     0x4F: 8,
     0x51: 8,
+    0x53: 8,
 }
 
 NAME_RE_STOC_HEADERS: set[int] = {
@@ -548,6 +549,10 @@ class PacketSniffer:
             fields = {'heading': round(self._f32(raw, 4) or 0.0, 4), 'pitch': round(self._f32(raw, 8) or 0.0, 4)}
         elif header == 0x46 and len(raw) >= 20:
             fields = {'skill_id': self._u32(raw, 4), 'type': self._u32(raw, 8), 'target_id': self._u32(raw, 12), 'flags': self._u32(raw, 16)}
+        elif header == 0x51 and len(raw) >= 8:
+            fields = {'agent_id': self._u32(raw, 4)}
+        elif header == 0x53 and len(raw) >= 8:
+            fields = {'use_key_or_flag': self._u32(raw, 4)}
         elif header == 0x00C1 and len(raw) >= 12:
             fields = self._format_u32_words(raw)
         else:
